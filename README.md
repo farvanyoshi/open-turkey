@@ -50,9 +50,13 @@ The installed program is independent of the source directory — once installed,
 
 ## Concepts
 
-- **Block**: a set of sites/apps you want to block together.
-- **Active**: a block that is currently in effect (the system is enforcing it).
-- **Lock (`--lock`)**: when enabled, prevents deactivation via `stop`. The only way to deactivate a locked block is `unlock`, which requires completing a typing challenge — deliberate friction to outlast an impulse.
+- **Block**: a set of sites/apps (and optional browser patterns) you block together. A block is either a **blocklist** (block its sites) or an **allowlist** (`--allowlist`: block everything *except* its sites, enforced at the browser layer).
+- **Active**: a block currently in effect (the system is enforcing it).
+- **Character lock (`--lock`)**: prevents `stop`. The only way out is `unlock`, which requires completing a typing challenge (paste is rejected) — deliberate friction to outlast an impulse.
+- **Time lock (`--for` / `--until`)**: the block cannot be removed *at all* — not even with the challenge — until the time passes. The strongest lock.
+- **Schedule**: recurring windows (e.g. weekdays 09:00–17:00). The daemon turns the block on when a window opens and off when it closes; while a window is open the block can't be stopped.
+
+While a block is *held* (char-locked, time-locked, or in a schedule window) it also can't be edited, and `make uninstall` refuses. Everything is friction, not a security boundary — a determined root user can always recover (see the threat-model note above).
 
 ## Commands
 
@@ -62,6 +66,28 @@ The installed program is independent of the source directory — once installed,
 open-turkey block create social-media
 open-turkey block add-site social-media instagram.com x.com facebook.com
 open-turkey block add-app  social-media discord telegram
+```
+
+Seed from a built-in template (`social-media`, `news`, `video`, `shopping`), or make an allowlist block:
+
+```bash
+open-turkey block create focus --template social-media
+open-turkey block create work  --allowlist
+open-turkey block set-mode work allowlist   # or blocklist
+```
+
+Add keyword/wildcard URL patterns (browser layer only):
+
+```bash
+open-turkey block add-pattern social-media '*casino*' '*://*/*ads*'
+open-turkey block remove-pattern social-media '*casino*'
+```
+
+Share a block between machines:
+
+```bash
+open-turkey block export social-media > social.json
+open-turkey block import social.json
 ```
 
 Show details:
@@ -84,10 +110,22 @@ Activate:
 open-turkey start social-media
 ```
 
-Activate with a lock:
+Activate with a character lock, or a time lock:
 
 ```bash
-open-turkey start social-media --lock
+open-turkey start social-media --lock              # typing challenge to remove
+open-turkey start social-media --lock --lock-chars 500
+open-turkey start social-media --for 2h            # can't be removed for 2 hours
+open-turkey start social-media --until 17:00       # can't be removed until 17:00
+```
+
+Recurring schedule (the daemon activates/deactivates it automatically):
+
+```bash
+open-turkey schedule add social-media --days weekdays --from 09:00 --to 17:00
+open-turkey schedule add social-media --days sat,sun --from 10:00 --to 12:00
+open-turkey schedule list social-media
+open-turkey schedule remove social-media 1
 ```
 
 Show status:
@@ -150,6 +188,10 @@ sudo make uninstall
 ```
 
 Uninstalling first runs a guard that **refuses while any locked block is still active** (so uninstalling can't be used to sidestep a lock — unlock those blocks first). When it proceeds, it deactivates all blocks and removes every blocking layer (`/etc/hosts` entries, firewall rules, browser policies) so the system is left clean rather than blocked-with-no-tool.
+
+## Intentionally not implemented
+
+Cold Turkey's "Frozen Turkey" locks you out of the whole computer (screen lock / forced logout) for a set time. Open Turkey deliberately does **not** do this: a bug or a mistimed lock could leave you unable to use your own machine with no safe recovery. Time-locked blocks give most of the benefit — un-removable focus for a fixed window — without the lock-out risk. IPv6 is covered by the firewall's IP rules, but those rules are best-effort (shared CDN IPs, changing addresses); `/etc/hosts` and browser policy remain the authoritative layers.
 
 ## License
 

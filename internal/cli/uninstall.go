@@ -24,6 +24,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/brunodcdo/open-turkey/internal/blocker"
 	"github.com/spf13/cobra"
@@ -45,16 +46,21 @@ var prepareUninstallCmd = &cobra.Command{
 			return err
 		}
 
-		// Refuse while any block is locked — uninstalling must not be a way
-		// around the lock.
-		var locked []string
+		// Refuse while any block is held (char-locked, time-locked, or in a
+		// scheduled window) — uninstalling must not be a way around a lock.
+		now := time.Now()
+		var held []string
 		for _, b := range active {
-			if b.Locked {
-				locked = append(locked, b.BlockName)
+			hold, err := blockHold(database, b.BlockName, now)
+			if err != nil {
+				return err
+			}
+			if hold.held() {
+				held = append(held, b.BlockName)
 			}
 		}
-		if len(locked) > 0 {
-			return fmt.Errorf("cannot uninstall: locked block(s) still active: %v. Unlock them first with 'open-turkey unlock <block>'", locked)
+		if len(held) > 0 {
+			return fmt.Errorf("cannot uninstall: held block(s) still active: %v. Clear the hold first (unlock, or wait for a time lock / schedule window to end)", held)
 		}
 
 		// Deactivate everything so the daemon (and this command) leave nothing

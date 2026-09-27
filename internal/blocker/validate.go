@@ -125,6 +125,42 @@ func IsValidDomain(s string) bool {
 	return true
 }
 
+// IsValidPattern reports whether p is acceptable as a browser URL pattern
+// (a wildcard/keyword filter for URLBlocklist / WebsiteFilter). Patterns are
+// only ever written into JSON policy files (where encoding neutralizes any
+// special characters) and consumed by the browser, never by /etc/hosts or
+// iptables — so the check just rejects the empty string, anything with
+// whitespace or control characters, and over-long input.
+func IsValidPattern(p string) bool {
+	if len(p) == 0 || len(p) > 500 {
+		return false
+	}
+	for i := 0; i < len(p); i++ {
+		c := p[i]
+		if c <= 0x20 || c == 0x7f {
+			return false // control chars and space
+		}
+	}
+	return true
+}
+
+// ValidPatterns validates, deduplicates and sorts browser patterns, dropping
+// any that are invalid.
+func ValidPatterns(patterns []string) []string {
+	set := make(map[string]struct{}, len(patterns))
+	for _, p := range patterns {
+		if IsValidPattern(p) {
+			set[p] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(set))
+	for p := range set {
+		out = append(out, p)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // ValidDomains normalizes, validates, deduplicates and sorts a list of
 // user-supplied domains, discarding anything invalid. Every layer funnels its
 // input through this so behavior is identical everywhere and no invalid string

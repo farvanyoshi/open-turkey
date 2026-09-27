@@ -22,13 +22,24 @@ check that everything compiles: `CGO_ENABLED=0 go build ./...`.
 - **Entrypoint** (`cmd/open-turkey/main.go`): lean, just delegates to `cli.Execute()`.
 - **CLI** (`internal/cli/`): Cobra commands. `block.go` (block CRUD),
   `control.go` (`start`/`stop`/`unlock`/`status`).
-- **Blocking layers** (`internal/blocker/`): `/etc/hosts`, iptables firewall,
-  browser policies (Firefox/Chrome/Chromium/Brave) and process killing.
-- **Daemon** (`internal/daemon/`): systemd service, reapplies the layers every 5s
-  in case anything is changed manually.
-- **DB** (`internal/db/`): SQLite at `/var/lib/open-turkey/open-turkey.db` (WAL).
-- **Lock** (`internal/lock/`): typing challenge that locks a block's deactivation
-  (`--lock`), creating friction against impulsive deactivation.
+- **Blocking layers** (`internal/blocker/`): `/etc/hosts` (atomic writes),
+  iptables + ip6tables firewall (real-IP resolution via a small built-in DNS
+  client that bypasses `/etc/hosts`; expanded DoH blocklist), browser policies
+  for Firefox/Chrome/Chromium/Brave/Edge/Opera/Vivaldi (blocklist, allowlist,
+  wildcard patterns, DoH disabled), and exact-name process killing. Domain
+  validation (`validate.go`) guards against `/etc/hosts` injection.
+- **Enforce** (`internal/enforce/`): turns the active blocks into layer inputs;
+  `Apply` (CLI, on state change) and `Tick` (daemon, per cycle: schedule
+  reconciliation + drift-only reapply). Single source of truth so CLI and daemon
+  agree.
+- **Schedule** (`internal/schedule/`): pure time logic for recurring windows.
+- **Daemon** (`internal/daemon/`): systemd service, calls `enforce.Tick` every 5s.
+- **DB** (`internal/db/`): SQLite at `/var/lib/open-turkey/open-turkey.db` (WAL);
+  `OPEN_TURKEY_DB` overrides the path (tests only; the unit never sets it).
+  `db.go` core + `features.go` (modes, patterns, schedules, time locks, schema
+  upgrades).
+- **Lock** (`internal/lock/`): raw-mode, paste-resistant typing challenge that
+  gates a char-locked block's deactivation.
 
 ## System installation
 
@@ -40,5 +51,8 @@ in `/etc/sudoers.d/open-turkey`, the `open-turkey.service` unit and the DB in
 ## Commands
 
 Full usage and examples in `README.md`. Summary:
-`block create|add-site|add-app|remove-site|remove-app|list|info|remove`,
-`start [--lock]`, `stop`, `unlock`, `status`.
+`block create [--allowlist] [--template T] | add-site | add-app | remove-site |
+remove-app | add-pattern | remove-pattern | set-mode | export | import | list |
+info | remove`, `start [--lock] [--lock-chars N] [--for D | --until HH:MM]`,
+`stop`, `unlock`, `status`, `schedule add|list|remove`, and the hidden
+`prepare-uninstall` (run by `make uninstall`).

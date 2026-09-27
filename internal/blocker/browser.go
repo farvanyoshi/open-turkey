@@ -58,6 +58,26 @@ var chromiumPolicyPaths = []string{
 	"/etc/vivaldi/policies/managed/open-turkey.json",    // Vivaldi
 }
 
+// BrowserPolicy describes what the browser layer should enforce. It is richer
+// than a flat domain list so it can express keyword/wildcard patterns and
+// allowlist ("block everything except") mode, neither of which the /etc/hosts
+// or firewall layers can represent.
+type BrowserPolicy struct {
+	// BlockDomains are bare hosts to block (blocklist mode / always blocked).
+	BlockDomains []string
+	// BlockPatterns are extra wildcard/keyword URL filters (browser only).
+	BlockPatterns []string
+	// AllowMode turns on "block everything except AllowDomains".
+	AllowMode bool
+	// AllowDomains are the hosts permitted when AllowMode is set.
+	AllowDomains []string
+}
+
+// empty reports whether the policy would block nothing.
+func (p BrowserPolicy) Empty() bool {
+	return !p.AllowMode && len(ValidDomains(p.BlockDomains)) == 0 && len(ValidPatterns(p.BlockPatterns)) == 0
+}
+
 // =============================================================================
 // Public functions
 // =============================================================================
@@ -67,34 +87,90 @@ var chromiumPolicyPaths = []string{
 // Firefox and Chromium use DIFFERENT pattern formats (treating them the same
 // once let subdomains through), so we build two sets:
 //
-//   - Firefox (WebsiteFilter): match patterns like "*://*.domain.com/*".
-//   - Chromium/Chrome/Brave/Edge/Opera/Vivaldi (URLBlocklist): a bare
-//     "domain.com" filter, which already matches the root, all subdomains and
-//     all paths. Wildcards are invalid there and are silently dropped.
-//     Ref.: https://www.chromium.org/administrators/url-blocklist-filter-format/
+//   - Firefox (WebsiteFilter): match patterns like "*://*.domain.com/*", plus a
+//     catch-all "*://*/*" with Exceptions in allowlist mode.
+//   - Chromium family (URLBlocklist / URLAllowlist): a bare "domain.com" filter
+//     (which matches root, subdomains and paths), or "*" plus URLAllowlist in
+//     allowlist mode.
 //
-// With no valid domains, the policies are removed instead of written empty, so
-// an apps-only block leaves no policy files behind.
-func ApplyBrowserPolicies(domains []string) error {
-	valid := ValidDomains(domains)
-	if len(valid) == 0 {
+// With an empty (nothing-to-block) policy, the files are removed instead of
+// written empty, so an apps-only block leaves no policy files behind.
+func ApplyBrowserPolicies(p BrowserPolicy) error {
+	if p.Empty() {
 		return RemoveBrowserPolicies()
 	}
 
-	ffPatterns := firefoxPatterns(valid)
-	crFilters := chromiumFilters(valid)
-
-	if err := applyFirefoxPolicy(ffPatterns); err != nil {
+	if err := applyFirefoxPolicy(firefoxBlockSet(p), firefoxExceptionSet(p)); err != nil {
 		return fmt.Errorf("failed to apply Firefox policy: %w", err)
 	}
 
+	block := chromiumBlockSet(p)
+	allow := chromiumAllowSet(p)
 	for _, path := range chromiumPolicyPaths {
-		if err := applyChromiumPolicy(path, crFilters); err != nil {
+		if err := applyChromiumPolicy(path, block, allow); err != nil {
 			return fmt.Errorf("failed to apply policy at %s: %w", path, err)
 		}
 	}
 
 	return nil
+}
+
+// BlockDomainsPolicy is a convenience constructor for the common case of a
+// plain blocklist of domains (no patterns, no allowlist).
+func BlockDomainsPolicy(domains []string) BrowserPolicy {
+	return BrowserPolicy{BlockDomains: domains}
+}
+
+// firefoxBlockSet builds Firefox's WebsiteFilter.Block array for a policy.
+func firefoxBlockSet(p BrowserPolicy) []string {
+	if p.AllowMode {
+		// Block all http/https URLs; allowed sites go in Exceptions.
+		set := []string{"*://*/*"}
+		return dedupSort(append(set, ValidPatterns(p.BlockPatterns)...))
+	}
+	set := firefoxPatterns(ValidDomains(p.BlockDomains))
+	return dedupSort(append(set, ValidPatterns(p.BlockPatterns)...))
+}
+
+// firefoxExceptionSet builds Firefox's WebsiteFilter.Exceptions array (only
+// meaningful in allowlist mode).
+func firefoxExceptionSet(p BrowserPolicy) []string {
+	if !p.AllowMode {
+		return nil
+	}
+	return firefoxPatterns(ValidDomains(p.AllowDomains))
+}
+
+// chromiumBlockSet builds the URLBlocklist array for a policy.
+func chromiumBlockSet(p BrowserPolicy) []string {
+	if p.AllowMode {
+		return dedupSort(append([]string{"*"}, ValidPatterns(p.BlockPatterns)...))
+	}
+	set := chromiumFilters(ValidDomains(p.BlockDomains))
+	return dedupSort(append(set, ValidPatterns(p.BlockPatterns)...))
+}
+
+// chromiumAllowSet builds the URLAllowlist array (only meaningful in allowlist
+// mode).
+func chromiumAllowSet(p BrowserPolicy) []string {
+	if !p.AllowMode {
+		return nil
+	}
+	return chromiumFilters(ValidDomains(p.AllowDomains))
+}
+
+// dedupSort returns the sorted, deduplicated set of the input.
+func dedupSort(in []string) []string {
+	set := make(map[string]struct{}, len(in))
+	for _, s := range in {
+		set[s] = struct{}{}
+	}
+	out := make([]string, 0, len(set))
+	for s := range set {
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // RemoveBrowserPolicies removes our blocking policies from every browser.
@@ -118,24 +194,25 @@ func RemoveBrowserPolicies() error {
 // browser whose policy directory exists. It is strict: any missing filter, any
 // tampered blocklist, or a missing DoH-off setting makes it return false so the
 // daemon reapplies. With no domains, "applied" means our policies are absent.
-func IsBrowserPoliciesApplied(domains []string) bool {
-	valid := ValidDomains(domains)
-	if len(valid) == 0 {
+func IsBrowserPoliciesApplied(p BrowserPolicy) bool {
+	if p.Empty() {
 		return !BrowserPoliciesPresent()
 	}
 
-	ffPatterns := firefoxPatterns(valid)
-	crFilters := chromiumFilters(valid)
+	ffBlock := firefoxBlockSet(p)
+	ffExceptions := firefoxExceptionSet(p)
+	crBlock := chromiumBlockSet(p)
+	crAllow := chromiumAllowSet(p)
 
 	if dirExists(filepath.Dir(firefoxPolicyPath)) {
-		if !checkFirefoxPolicy(ffPatterns) {
+		if !checkFirefoxPolicy(ffBlock, ffExceptions) {
 			return false
 		}
 	}
 
 	for _, path := range chromiumPolicyPaths {
 		if dirExists(filepath.Dir(path)) {
-			if !checkChromiumPolicy(path, crFilters) {
+			if !checkChromiumPolicy(path, crBlock, crAllow) {
 				return false
 			}
 		}
@@ -235,7 +312,7 @@ func chromiumFilters(domains []string) []string {
 // any unrelated policies already present. We overwrite (not merge) our own
 // WebsiteFilter.Block so that removing a domain actually unblocks it, and we
 // force DNS-over-HTTPS off and locked.
-func applyFirefoxPolicy(patterns []string) error {
+func applyFirefoxPolicy(block, exceptions []string) error {
 	dir := filepath.Dir(firefoxPolicyPath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("failed to create directory %s: %w", dir, err)
@@ -257,9 +334,18 @@ func applyFirefoxPolicy(patterns []string) error {
 	if !ok {
 		websiteFilter = make(map[string]interface{})
 	}
-	blocks := make([]string, 0, len(patterns))
-	blocks = append(blocks, patterns...)
+	blocks := make([]string, 0, len(block))
+	blocks = append(blocks, block...)
 	websiteFilter["Block"] = blocks
+	// Exceptions carry the allowlist entries; drop the key when there are none
+	// so a switch back to blocklist mode doesn't leave stale exceptions.
+	if len(exceptions) > 0 {
+		exc := make([]string, 0, len(exceptions))
+		exc = append(exc, exceptions...)
+		websiteFilter["Exceptions"] = exc
+	} else {
+		delete(websiteFilter, "Exceptions")
+	}
 	policies["WebsiteFilter"] = websiteFilter
 
 	// Turn DNS-over-HTTPS off and lock it so it can't be re-enabled to bypass
@@ -308,9 +394,9 @@ func removeFirefoxPolicy() error {
 	return writeJSON(firefoxPolicyPath, root)
 }
 
-// checkFirefoxPolicy verifies WebsiteFilter.Block is exactly the expected set
-// and that DNS-over-HTTPS is present and disabled.
-func checkFirefoxPolicy(expected []string) bool {
+// checkFirefoxPolicy verifies WebsiteFilter.Block and .Exceptions are exactly
+// the expected sets and that DNS-over-HTTPS is present and disabled.
+func checkFirefoxPolicy(expectedBlock, expectedExceptions []string) bool {
 	content, err := os.ReadFile(firefoxPolicyPath)
 	if err != nil {
 		return false
@@ -327,7 +413,10 @@ func checkFirefoxPolicy(expected []string) bool {
 	if !ok {
 		return false
 	}
-	if !sameSet(stringsFromInterface(websiteFilter["Block"]), expected) {
+	if !sameSet(stringsFromInterface(websiteFilter["Block"]), expectedBlock) {
+		return false
+	}
+	if !sameSet(stringsFromInterface(websiteFilter["Exceptions"]), expectedExceptions) {
 		return false
 	}
 
@@ -344,23 +433,27 @@ func checkFirefoxPolicy(expected []string) bool {
 // =============================================================================
 
 // applyChromiumPolicy writes our managed-policy file for one Chromium-family
-// browser: the URL blocklist plus DNS-over-HTTPS turned off.
-func applyChromiumPolicy(path string, filters []string) error {
+// browser: the URL blocklist (and, in allowlist mode, the allowlist) plus
+// DNS-over-HTTPS turned off.
+func applyChromiumPolicy(path string, block, allow []string) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("failed to create directory %s: %w", dir, err)
 	}
 	policy := map[string]interface{}{
-		"URLBlocklist":            filters,
+		"URLBlocklist":            block,
 		"DnsOverHttpsMode":        "off",
 		"BuiltInDnsClientEnabled": false,
+	}
+	if len(allow) > 0 {
+		policy["URLAllowlist"] = allow
 	}
 	return writeJSON(path, policy)
 }
 
-// checkChromiumPolicy verifies URLBlocklist is exactly the expected set and
-// that DNS-over-HTTPS is off.
-func checkChromiumPolicy(path string, expected []string) bool {
+// checkChromiumPolicy verifies URLBlocklist and URLAllowlist are exactly the
+// expected sets and that DNS-over-HTTPS is off.
+func checkChromiumPolicy(path string, expectedBlock, expectedAllow []string) bool {
 	content, err := os.ReadFile(path)
 	if err != nil {
 		return false
@@ -369,7 +462,10 @@ func checkChromiumPolicy(path string, expected []string) bool {
 	if json.Unmarshal(content, &policy) != nil {
 		return false
 	}
-	if !sameSet(stringsFromInterface(policy["URLBlocklist"]), expected) {
+	if !sameSet(stringsFromInterface(policy["URLBlocklist"]), expectedBlock) {
+		return false
+	}
+	if !sameSet(stringsFromInterface(policy["URLAllowlist"]), expectedAllow) {
 		return false
 	}
 	mode, ok := policy["DnsOverHttpsMode"].(string)

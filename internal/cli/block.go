@@ -25,9 +25,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/brunodcdo/open-turkey/internal/blocker"
 	"github.com/brunodcdo/open-turkey/internal/db"
+	"github.com/brunodcdo/open-turkey/internal/enforce"
 	"github.com/spf13/cobra"
 )
 
@@ -69,12 +71,12 @@ func openDB() (*db.DB, error) {
 // entries weakens a lock the user set precisely so they couldn't weaken it on
 // impulse. So all four edit commands go through this guard.
 func ensureEditable(database *db.DB, name string) error {
-	locked, err := database.IsBlockLocked(name)
+	hold, err := blockHold(database, name, time.Now())
 	if err != nil {
 		return err
 	}
-	if locked {
-		return fmt.Errorf("block '%s' is locked and cannot be edited. Unlock it first with 'open-turkey unlock %s'", name, name)
+	if hold.held() {
+		return fmt.Errorf("block '%s' is currently held (locked, time-locked or in a scheduled window) and cannot be edited. Remove the hold first", name)
 	}
 	return nil
 }
@@ -115,34 +117,71 @@ var blockCmd = &cobra.Command{
 // The name must be unique — if a block with the same name already exists,
 // the database returns an error.
 //
-// Usage: open-turkey block create social-media
+// Usage:
+//
+//	open-turkey block create social-media
+//	open-turkey block create focus --template social-media
+//	open-turkey block create work --allowlist
 var blockCreateCmd = &cobra.Command{
 	Use:   "create [name]",
 	Short: "Create a new block",
-	// cobra.ExactArgs(1) ensures the user passes exactly 1 argument.
-	// If they pass 0 or more than 1, Cobra shows an automatic error message.
+	Long: `Create a new block.
+
+  --allowlist         Make it an allowlist block (block everything EXCEPT its
+                      sites; enforced at the browser layer only).
+  --template NAME     Seed it from a built-in list (social-media, news, video,
+                      shopping).`,
 	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
-		// args[0] contains the block name the user typed.
 		name := args[0]
 
-		// Open the database.
+		allowlist, _ := cmd.Flags().GetBool("allowlist")
+		template, _ := cmd.Flags().GetString("template")
+
+		mode := db.ModeBlocklist
+		if allowlist {
+			mode = db.ModeAllowlist
+		}
+
+		// Resolve template seeds (validated) before touching the database, so a
+		// bad template name fails cleanly with nothing created.
+		var seeds []string
+		if template != "" {
+			raw, err := templateDomains(template)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			seeds, err = normalizeDomains(raw)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+		}
+
 		database, err := openDB()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
-		// defer ensures the database is closed when leaving the function,
-		// even if an error happens along the way.
 		defer database.Close()
 
-		// Call the db package function to create the block.
-		if err := database.CreateBlock(name); err != nil {
+		if err := database.CreateBlock(name, mode); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
 
-		fmt.Printf("Block '%s' created successfully.\n", name)
+		if len(seeds) > 0 {
+			if err := database.AddSites(name, seeds); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+		}
+
+		fmt.Printf("Block '%s' created successfully (%s).\n", name, mode)
+		if len(seeds) > 0 {
+			fmt.Printf("Seeded %d sites from template '%s'.\n", len(seeds), template)
+		}
 	},
 }
 
@@ -196,7 +235,7 @@ var blockAddSiteCmd = &cobra.Command{
 			os.Exit(1)
 		}
 		if active {
-			if err := reapplyOrRemoveLayers(database); err != nil {
+			if err := enforce.ApplyFromDB(database); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
@@ -265,7 +304,7 @@ var blockRemoveSiteCmd = &cobra.Command{
 				}
 			}
 
-			if err := reapplyOrRemoveLayers(database); err != nil {
+			if err := enforce.ApplyFromDB(database); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
@@ -316,7 +355,7 @@ var blockAddAppCmd = &cobra.Command{
 			os.Exit(1)
 		}
 		if active {
-			if err := reapplyOrRemoveLayers(database); err != nil {
+			if err := enforce.ApplyFromDB(database); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
@@ -377,7 +416,7 @@ var blockRemoveAppCmd = &cobra.Command{
 				}
 			}
 
-			if err := reapplyOrRemoveLayers(database); err != nil {
+			if err := enforce.ApplyFromDB(database); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
@@ -468,21 +507,22 @@ var blockInfoCmd = &cobra.Command{
 
 		// Show the block's basic information.
 		fmt.Printf("Block: %s\n", block.Name)
+		fmt.Printf("Mode: %s\n", block.Mode)
 		fmt.Printf("Created at: %s\n", block.CreatedAt)
 
-		// Build the status line based on the Active and Locked fields.
-		// A block can be:
-		//   - Inactive (not in the active_blocks table)
-		//   - Active (active, but not locked)
-		//   - Active and Locked (must type N characters to unlock)
+		// Status line: inactive, or active with any holds.
 		if block.Active {
-			if block.Locked {
-				// When locked, show how many characters are needed to unlock.
-				// This tells the user the configured level of "friction".
-				fmt.Printf("Status: Active (Locked - %d characters)\n", block.LockChars)
-			} else {
-				fmt.Printf("Status: Active\n")
+			status := "Active"
+			if block.Scheduled {
+				status += " (scheduled)"
 			}
+			if block.Locked {
+				status += fmt.Sprintf(" [Locked - %d characters]", block.LockChars)
+			}
+			if block.LockedUntil > time.Now().Unix() {
+				status += fmt.Sprintf(" [Time-locked until %s]", time.Unix(block.LockedUntil, 0).Format("2006-01-02 15:04"))
+			}
+			fmt.Printf("Status: %s\n", status)
 		} else {
 			fmt.Printf("Status: Inactive\n")
 		}
@@ -508,6 +548,25 @@ var blockInfoCmd = &cobra.Command{
 			}
 		} else {
 			fmt.Println("Blocked applications: none")
+		}
+
+		// Show browser patterns, if any.
+		if len(block.Patterns) > 0 {
+			fmt.Println()
+			fmt.Println("Browser patterns:")
+			for _, p := range block.Patterns {
+				fmt.Printf("  - %s\n", p)
+			}
+		}
+
+		// Show schedules, if any.
+		if schedules, err := database.ListSchedules(name); err == nil && len(schedules) > 0 {
+			fmt.Println()
+			fmt.Println("Schedules:")
+			for _, s := range schedules {
+				fmt.Printf("  [%d] %s %s-%s\n", s.ID, scheduleFormatDays(s.DaysMask),
+					scheduleFormatMinutes(s.StartMin), scheduleFormatMinutes(s.EndMin))
+			}
 		}
 	},
 }
@@ -567,6 +626,10 @@ var blockRemoveCmd = &cobra.Command{
 func init() {
 	// Add the "block" command as a child of the root command.
 	rootCmd.AddCommand(blockCmd)
+
+	// Flags for "block create".
+	blockCreateCmd.Flags().Bool("allowlist", false, "Create an allowlist block (block everything except its sites)")
+	blockCreateCmd.Flags().String("template", "", "Seed the block from a built-in list (social-media, news, video, shopping)")
 
 	// Add every subcommand as a child of "block".
 	blockCmd.AddCommand(blockCreateCmd)

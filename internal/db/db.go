@@ -50,11 +50,19 @@ type DB struct {
 	conn *sql.DB
 }
 
+// Block modes. A "blocklist" block blocks its sites; an "allowlist" block
+// blocks everything EXCEPT its sites (enforced at the browser layer only).
+const (
+	ModeBlocklist = "blocklist"
+	ModeAllowlist = "allowlist"
+)
+
 // Block represents a block in the general listing.
 // SiteCount and AppCount avoid loading every domain/app just to count them.
 type Block struct {
 	ID        int
 	Name      string
+	Mode      string
 	SiteCount int
 	AppCount  int
 	CreatedAt string
@@ -63,24 +71,32 @@ type Block struct {
 // BlockDetail carries all the information about a specific block,
 // including the full lists of blocked sites and apps.
 type BlockDetail struct {
-	ID        int
-	Name      string
-	Sites     []string
-	Apps      []string
-	Active    bool
-	Locked    bool
-	LockChars int
-	CreatedAt string
+	ID          int
+	Name        string
+	Mode        string
+	Sites       []string
+	Apps        []string
+	Patterns    []string
+	Active      bool
+	Locked      bool
+	LockChars   int
+	LockedUntil int64 // unix seconds; 0 means no time lock
+	Scheduled   bool  // activated automatically by a schedule
+	CreatedAt   string
 }
 
 // ActiveBlockDetail represents a block that is currently active.
 // The daemon uses it to know what to block.
 type ActiveBlockDetail struct {
-	BlockName string
-	Sites     []string
-	Apps      []string
-	Locked    bool
-	LockChars int
+	BlockName   string
+	Mode        string
+	Sites       []string
+	Apps        []string
+	Patterns    []string
+	Locked      bool
+	LockChars   int
+	LockedUntil int64
+	Scheduled   bool
 }
 
 // --------------------------------------------------------------------------
@@ -106,6 +122,7 @@ const migrations = `
 CREATE TABLE IF NOT EXISTS blocks (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     name       TEXT UNIQUE NOT NULL,
+    mode       TEXT NOT NULL DEFAULT 'blocklist',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -123,11 +140,29 @@ CREATE TABLE IF NOT EXISTS apps (
     FOREIGN KEY (block_id) REFERENCES blocks(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS patterns (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    block_id INTEGER NOT NULL,
+    pattern  TEXT NOT NULL,
+    FOREIGN KEY (block_id) REFERENCES blocks(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS schedules (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    block_id  INTEGER NOT NULL,
+    days_mask INTEGER NOT NULL,
+    start_min INTEGER NOT NULL,
+    end_min   INTEGER NOT NULL,
+    FOREIGN KEY (block_id) REFERENCES blocks(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS active_blocks (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     block_id     INTEGER UNIQUE NOT NULL,
     locked       BOOLEAN NOT NULL DEFAULT 0,
     lock_chars   INTEGER NOT NULL DEFAULT 0,
+    locked_until INTEGER NOT NULL DEFAULT 0,
+    scheduled    BOOLEAN NOT NULL DEFAULT 0,
     activated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (block_id) REFERENCES blocks(id) ON DELETE CASCADE
 );
@@ -185,6 +220,12 @@ func OpenDB(dbPath string) (*DB, error) {
 		return nil, fmt.Errorf("failed to create database tables: %w", err)
 	}
 
+	// Bring older databases (created before newer columns existed) up to date.
+	if err := upgradeSchema(conn); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("failed to upgrade database schema: %w", err)
+	}
+
 	return &DB{conn: conn}, nil
 }
 
@@ -201,10 +242,17 @@ func (d *DB) Close() error {
 // Block CRUD
 // --------------------------------------------------------------------------
 
-// CreateBlock creates a new block with the given name.
+// CreateBlock creates a new block with the given name and mode
+// (ModeBlocklist or ModeAllowlist; empty defaults to blocklist).
 // The name must be unique — if it already exists, the database returns an error.
-func (d *DB) CreateBlock(name string) error {
-	_, err := d.conn.Exec("INSERT INTO blocks (name) VALUES (?)", name)
+func (d *DB) CreateBlock(name, mode string) error {
+	if mode == "" {
+		mode = ModeBlocklist
+	}
+	if mode != ModeBlocklist && mode != ModeAllowlist {
+		return fmt.Errorf("invalid block mode '%s' (use '%s' or '%s')", mode, ModeBlocklist, ModeAllowlist)
+	}
+	_, err := d.conn.Exec("INSERT INTO blocks (name, mode) VALUES (?, ?)", name, mode)
 	if err != nil {
 		// If it's a UNIQUE constraint error, give a clearer message.
 		if strings.Contains(err.Error(), "UNIQUE") {
@@ -386,6 +434,7 @@ func (d *DB) ListBlocks() ([]Block, error) {
 		SELECT
 			b.id,
 			b.name,
+			b.mode,
 			COUNT(DISTINCT s.id) AS site_count,
 			COUNT(DISTINCT a.id) AS app_count,
 			b.created_at
@@ -407,7 +456,7 @@ func (d *DB) ListBlocks() ([]Block, error) {
 	var blocks []Block
 	for rows.Next() {
 		var b Block
-		if err := rows.Scan(&b.ID, &b.Name, &b.SiteCount, &b.AppCount, &b.CreatedAt); err != nil {
+		if err := rows.Scan(&b.ID, &b.Name, &b.Mode, &b.SiteCount, &b.AppCount, &b.CreatedAt); err != nil {
 			return nil, fmt.Errorf("failed to read block data: %w", err)
 		}
 		blocks = append(blocks, b)
@@ -432,20 +481,26 @@ func (d *DB) GetBlock(name string) (*BlockDetail, error) {
 		SELECT
 			b.id,
 			b.name,
+			b.mode,
 			b.created_at,
 			CASE WHEN ab.id IS NOT NULL THEN 1 ELSE 0 END AS active,
 			COALESCE(ab.locked, 0) AS locked,
-			COALESCE(ab.lock_chars, 0) AS lock_chars
+			COALESCE(ab.lock_chars, 0) AS lock_chars,
+			COALESCE(ab.locked_until, 0) AS locked_until,
+			COALESCE(ab.scheduled, 0) AS scheduled
 		FROM blocks b
 		LEFT JOIN active_blocks ab ON ab.block_id = b.id
 		WHERE b.name = ?
 	`, name).Scan(
 		&detail.ID,
 		&detail.Name,
+		&detail.Mode,
 		&detail.CreatedAt,
 		&detail.Active,
 		&detail.Locked,
 		&detail.LockChars,
+		&detail.LockedUntil,
+		&detail.Scheduled,
 	)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("block '%s' not found", name)
@@ -462,6 +517,12 @@ func (d *DB) GetBlock(name string) (*BlockDetail, error) {
 
 	// Fetch the block's apps.
 	detail.Apps, err = d.getBlockApps(detail.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Fetch the block's browser patterns.
+	detail.Patterns, err = d.getBlockPatterns(detail.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -509,18 +570,22 @@ func (d *DB) RemoveBlock(name string) error {
 // that block start being blocked by the daemon.
 //
 // Parameters:
-//   - locked: if true, the block can't be easily deactivated.
-//   - lockChars: how many random characters the user must type to unlock.
-//     The more characters, the more "friction" to deactivate.
-func (d *DB) ActivateBlock(name string, locked bool, lockChars int) error {
+//   - locked: if true, the block can't be deactivated via "stop" (needs the
+//     typing challenge via "unlock").
+//   - lockChars: how many random characters the challenge requires.
+//   - lockedUntil: unix seconds before which the block cannot be removed at all
+//     (a time lock); 0 means none.
+//   - scheduled: true when the daemon activated this block from a schedule, so
+//     the daemon may deactivate it again when the window ends.
+func (d *DB) ActivateBlock(name string, locked bool, lockChars int, lockedUntil int64, scheduled bool) error {
 	blockID, err := d.getBlockID(name)
 	if err != nil {
 		return err
 	}
 
 	_, err = d.conn.Exec(
-		"INSERT INTO active_blocks (block_id, locked, lock_chars) VALUES (?, ?, ?)",
-		blockID, locked, lockChars,
+		"INSERT INTO active_blocks (block_id, locked, lock_chars, locked_until, scheduled) VALUES (?, ?, ?, ?, ?)",
+		blockID, locked, lockChars, lockedUntil, scheduled,
 	)
 	if err != nil {
 		// If the block is already active, the UNIQUE block_id will cause an error.
@@ -598,7 +663,7 @@ func (d *DB) IsBlockLocked(name string) (bool, error) {
 // The daemon uses this to know what to block.
 func (d *DB) GetActiveBlocks() ([]ActiveBlockDetail, error) {
 	rows, err := d.conn.Query(`
-		SELECT b.id, b.name, ab.locked, ab.lock_chars
+		SELECT b.id, b.name, b.mode, ab.locked, ab.lock_chars, ab.locked_until, ab.scheduled
 		FROM active_blocks ab
 		JOIN blocks b ON b.id = ab.block_id
 	`)
@@ -608,26 +673,32 @@ func (d *DB) GetActiveBlocks() ([]ActiveBlockDetail, error) {
 	defer rows.Close()
 
 	var activeBlocks []ActiveBlockDetail
+	var ids []int
 	for rows.Next() {
 		var blockID int
 		var abd ActiveBlockDetail
 
-		if err := rows.Scan(&blockID, &abd.BlockName, &abd.Locked, &abd.LockChars); err != nil {
+		if err := rows.Scan(&blockID, &abd.BlockName, &abd.Mode, &abd.Locked, &abd.LockChars, &abd.LockedUntil, &abd.Scheduled); err != nil {
 			return nil, fmt.Errorf("failed to read active block: %w", err)
 		}
-
-		// For each active block, fetch its sites and apps.
-		abd.Sites, err = d.getBlockSites(blockID)
-		if err != nil {
-			return nil, err
-		}
-
-		abd.Apps, err = d.getBlockApps(blockID)
-		if err != nil {
-			return nil, err
-		}
-
 		activeBlocks = append(activeBlocks, abd)
+		ids = append(ids, blockID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate active blocks: %w", err)
+	}
+	// The child lookups below open their own queries, so we must finish reading
+	// (and let the deferred Close run) before issuing them; gather rows first.
+	for i := range activeBlocks {
+		if activeBlocks[i].Sites, err = d.getBlockSites(ids[i]); err != nil {
+			return nil, err
+		}
+		if activeBlocks[i].Apps, err = d.getBlockApps(ids[i]); err != nil {
+			return nil, err
+		}
+		if activeBlocks[i].Patterns, err = d.getBlockPatterns(ids[i]); err != nil {
+			return nil, err
+		}
 	}
 
 	if err := rows.Err(); err != nil {
