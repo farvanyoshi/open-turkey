@@ -2,28 +2,23 @@
 //
 // === WHAT IS THIS? ===
 //
-// This package is the ONLY way to unlock an active block in Open Turkey.
-// The idea is simple: create "friction". When you're tempted to access
-// something blocked (social media, games, etc.), the system makes you type a
-// huge random string — character by character, without mistakes.
+// This package is the only interactive way to unlock an active locked block.
+// The idea is friction: when you're tempted to reach something blocked, the
+// system makes you transcribe a long random string, character by character.
 //
 // === WHY DOES THIS WORK? ===
 //
-// It isn't real security. Anyone with access to the code could get around it.
-// The point is PSYCHOLOGICAL: the tedious task of typing hundreds of random
-// characters gives you time to reconsider whether you really need to unlock.
-// Most of the time, you give up — and that's what you wanted.
+// It isn't cryptographic security — a determined user with root can always get
+// around Open Turkey. The point is PSYCHOLOGICAL: the tedious transcription
+// gives the impulse time to pass. To keep that friction real, we make the
+// challenge hard to skip:
 //
-// === WHY crypto/rand AND NOT math/rand? ===
-//
-// math/rand generates "pseudo-random" numbers — they look random, but follow a
-// predictable pattern if you know the "seed". Someone clever could predict the
-// generated string and paste it without typing.
-//
-// crypto/rand uses the operating system's randomness sources (like
-// /dev/urandom on Linux). It's truly unpredictable — nobody can guess the
-// string before it's generated. Is it overkill for our case? Maybe.
-// But it's the right thing to do, and the cost is practically zero.
+//   - crypto/rand generates the string, so it can't be predicted from a seed.
+//   - The input is read in raw terminal mode, one keypress at a time, and
+//     PASTING is detected and rejected (see runChallengeRaw). Copy-pasting the
+//     displayed string would defeat the whole exercise.
+//   - A minimum length is enforced so "--lock-chars 0" or a negative value
+//     can't produce a trivially-empty challenge.
 package lock
 
 import (
@@ -33,207 +28,270 @@ import (
 	"math/big"
 	"os"
 	"strings"
+
+	"golang.org/x/sys/unix"
 )
 
-// DefaultLockChars is the default number of challenge characters.
-// 300 characters is enough to be really annoying to type, but not impossible.
-// It takes most people about 3-5 minutes — enough time for the "I need to
-// check Instagram RIGHT NOW" impulse to pass.
+// DefaultLockChars is the default challenge length. ~300 characters takes most
+// people several minutes — long enough for an impulse to pass.
 const DefaultLockChars = 300
 
-// charset is the set of characters used to generate the challenge.
-// It includes lowercase and uppercase letters, digits and symbols.
-// Mixing character types makes typing slower because you have to keep
-// switching between Shift, digits and letters.
-// This is intentional — the harder, the more friction.
+// MinLockChars is the smallest challenge length we allow. It stops a lock from
+// being configured with a trivially short (or empty) challenge.
+const MinLockChars = 30
+
+// charset mixes character classes so typing stays slow (constant Shift/number
+// switching). It's intentional friction.
 const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%&*"
 
-// GenerateChallenge generates a random string of the specified length.
-//
-// How it works, step by step:
-//  1. Create a byte slice (think of it as a "list" of characters)
-//  2. For each position, use crypto/rand.Int() to generate a random number
-//     between 0 and the charset size
-//  3. That number is used as an index to pick a character from the charset
-//  4. Repeat this 'length' times until the full string is built
-//
-// Simplified example:
-//
-//	charset = "abc" (3 characters)
-//	rand.Int() returns 2 → charset[2] = 'c'
-//	rand.Int() returns 0 → charset[0] = 'a'
-//	rand.Int() returns 1 → charset[1] = 'b'
-//	Result: "cab"
-//
-// In our case, the charset has 70 characters and the default length is 300,
-// so the result is something like: "aB3!kZ$m9Q..." (300 random characters).
+// GenerateChallenge returns a random string of the given length drawn from
+// charset using crypto/rand. It errors on a non-positive length.
 func GenerateChallenge(length int) (string, error) {
-	// big.NewInt converts the charset size to the type crypto/rand expects.
-	// crypto/rand works with big numbers (big.Int) because it was made for
-	// cryptography, where numbers can have hundreds of digits.
-	charsetSize := big.NewInt(int64(len(charset)))
+	if length <= 0 {
+		return "", fmt.Errorf("challenge length must be positive, got %d", length)
+	}
 
-	// Create the slice that will hold each generated character.
-	// In Go, a slice is like a dynamic array — a fixed-size list here.
+	charsetSize := big.NewInt(int64(len(charset)))
 	result := make([]byte, length)
 
 	for i := 0; i < length; i++ {
-		// rand.Int(rand.Reader, max) generates a random number between 0 and max-1.
-		// rand.Reader is the operating system's source of randomness.
-		// If something goes wrong (e.g. /dev/urandom is unavailable), it returns an error.
 		index, err := rand.Int(rand.Reader, charsetSize)
 		if err != nil {
-			// This practically never happens, but it's good to handle the error.
 			return "", fmt.Errorf("failed to generate random character at position %d: %w", i, err)
 		}
-
-		// index.Int64() converts the big.Int to a normal int64,
-		// which we use as an index to pick the character from the charset.
 		result[i] = charset[index.Int64()]
 	}
 
-	// Convert the byte slice to a string and return it.
 	return string(result), nil
 }
 
-// RunChallenge runs the full typing challenge.
+// RunChallenge generates a challenge, shows it, and reads the user's answer.
+// It returns true only if the transcription matches exactly.
 //
-// Flow:
-//  1. Generate the random string with GenerateChallenge
-//  2. Show the formatted string to the user (wrapped into 70-character lines)
-//  3. Read what the user typed from stdin (keyboard)
-//  4. Compare character by character
-//  5. If it matches: great, unlock authorized
-//  6. If it doesn't: show exactly where they went wrong to help on the next try
-//
-// Returns true if the challenge was completed successfully, false otherwise.
+// On a real terminal it reads in raw mode with paste detection. When stdin is
+// not a terminal (e.g. piped input in tests), it falls back to line reading —
+// paste detection isn't meaningful there.
 func RunChallenge(length int) (bool, error) {
-	// Step 1: Generate the challenge
 	challenge, err := GenerateChallenge(length)
 	if err != nil {
 		return false, fmt.Errorf("failed to generate challenge: %w", err)
 	}
 
-	// Step 2: Show the formatted challenge to the user.
-	// We wrap it into 70-character lines to make it easier to read.
-	// A single 300-character line would be impossible to follow.
 	fmt.Println()
 	fmt.Println("=== UNLOCK CHALLENGE ===")
 	fmt.Println()
-	fmt.Printf("To unlock, type EXACTLY the text below (%d characters):\n", length)
+	fmt.Printf("To unlock, TYPE (do not paste) exactly the text below (%d characters):\n", length)
 	fmt.Println()
 	fmt.Println(formatChallenge(challenge, 70))
 	fmt.Println()
 
-	// Step 3: Read the user's input.
-	// We use bufio.Scanner because it reads a whole line at once.
-	// Go's standard scanner (fmt.Scan) stops at the first space, which
-	// doesn't work for us — our string may contain any character.
+	fd := int(os.Stdin.Fd())
+	if isTerminal(fd) {
+		return runChallengeRaw(fd, challenge)
+	}
+	return runChallengeLine(challenge)
+}
+
+// runChallengeRaw reads the answer keypress by keypress in raw terminal mode,
+// rejecting pastes. It returns true only when the fully typed input equals the
+// challenge.
+//
+// PASTE DETECTION. In raw mode a human keypress arrives as a single byte per
+// read, while a paste dumps many bytes at once. So:
+//   - We enable bracketed-paste mode; a paste then arrives wrapped in the
+//     escape sequence ESC[200~ … ESC[201~, which we detect and reject.
+//   - As a backstop (terminals that don't support bracketed paste), any single
+//     read that delivers more than one printable character is treated as a
+//     paste and rejected.
+//
+// Escape sequences from real keys (arrows, etc.) begin with ESC and are ignored
+// rather than counted as input.
+func runChallengeRaw(fd int, challenge string) (bool, error) {
+	restore, err := makeRaw(fd)
+	if err != nil {
+		// Couldn't switch to raw mode — fall back to line reading.
+		return runChallengeLine(challenge)
+	}
+	defer restore()
+
+	// Ask the terminal to bracket pasted text so we can detect it.
+	fmt.Print("\x1b[?2004h")
+	defer fmt.Print("\x1b[?2004l")
+
 	fmt.Print("Type the text above: ")
-	scanner := bufio.NewScanner(os.Stdin)
 
-	// By default, the Scanner has a limit of ~64KB per line.
-	// For very large challenges, we need to increase that buffer.
-	// 1MB is more than enough for any reasonable challenge.
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+	var typed []byte
+	buf := make([]byte, 512)
 
-	// Scan() reads a line from stdin. Returns false on error or EOF.
-	if !scanner.Scan() {
-		if err := scanner.Err(); err != nil {
-			return false, fmt.Errorf("failed to read user input: %w", err)
+	for len(typed) < len(challenge) {
+		n, err := os.Stdin.Read(buf)
+		if err != nil {
+			fmt.Print("\r\n")
+			return false, fmt.Errorf("failed to read input: %w", err)
 		}
-		// If Scan() returns false without an error, it means EOF (the user
-		// closed the terminal or redirected /dev/null, for example).
-		return false, fmt.Errorf("empty input — no text was typed")
-	}
+		if n == 0 {
+			continue
+		}
+		chunk := buf[:n]
 
-	// scanner.Text() returns the line read, already without the trailing '\n'.
-	// We don't need to trim manually — the Scanner takes care of it.
-	input := scanner.Text()
+		// Bracketed paste sequence → definite paste.
+		if bytesContains(chunk, []byte("\x1b[200~")) {
+			fmt.Print("\r\nPaste detected. Unlocking requires typing the text by hand.\r\n")
+			return false, nil
+		}
 
-	// Step 4: Compare the input with the challenge.
-	// First do a quick comparison (are the strings equal?).
-	if input == challenge {
-		// Step 5: Success!
-		fmt.Println()
-		fmt.Println("Unlock authorized! Challenge completed successfully.")
-		return true, nil
-	}
+		// An escape sequence from a real key (arrow, Home, etc.) starts with
+		// ESC — ignore the whole chunk rather than mistake it for input.
+		if chunk[0] == 0x1b {
+			continue
+		}
 
-	// Step 6: Failure — find where the first mistake is
-	// to help the user on the next try.
-	fmt.Println()
-	fmt.Println("Incorrect text! Unlock denied.")
+		printable := 0
+		aborted := false
+		for _, b := range chunk {
+			switch {
+			case b == 3: // Ctrl-C
+				aborted = true
+			case b == '\r' || b == '\n':
+				// Enter before the full length means "too short".
+				fmt.Print("\r\n")
+				return finishAndCompare(string(typed), challenge), nil
+			case b == 127 || b == 8: // Backspace / Delete
+				if len(typed) > 0 {
+					typed = typed[:len(typed)-1]
+					fmt.Print("\b \b")
+				}
+			case b >= 0x20 && b < 0x7f: // printable ASCII
+				printable++
+				typed = append(typed, b)
+				fmt.Print("*") // echo a mask, not the character
+			default:
+				// ignore other control bytes
+			}
+		}
 
-	// Find the first position where the texts differ.
-	// Walk character by character until we find the difference.
-	minLen := len(input)
-	if len(challenge) < minLen {
-		minLen = len(challenge)
-	}
+		if aborted {
+			fmt.Print("\r\n")
+			return false, nil
+		}
 
-	for i := 0; i < minLen; i++ {
-		if input[i] != challenge[i] {
-			// Show the position (starting at 1, not 0, because
-			// "position 0" doesn't make sense to a regular user).
-			fmt.Printf("Error at position %d: expected '%c', typed '%c'\n", i+1, challenge[i], input[i])
+		// More than one printable char in a single read is a paste.
+		if printable > 1 {
+			fmt.Print("\r\nPaste detected. Unlocking requires typing the text by hand.\r\n")
 			return false, nil
 		}
 	}
 
-	// If we got here, one text is a prefix of the other (one is shorter).
-	// That means the user typed too many or too few characters.
-	if len(input) < len(challenge) {
-		fmt.Printf("Text too short! You typed %d characters, but %d are required.\n", len(input), len(challenge))
-	} else {
-		fmt.Printf("Text too long! You typed %d characters, but %d are required.\n", len(input), len(challenge))
-	}
-
-	return false, nil
+	fmt.Print("\r\n")
+	return finishAndCompare(string(typed), challenge), nil
 }
 
-// formatChallenge wraps the challenge text into fixed-width lines.
-//
-// Without this, a 300-character string would look like this in the terminal:
-//
-//	aB3!kZ$m9Q...(...300 characters on a single line, running off the screen)
-//
-// With formatting (lineWidth=70), it looks like this:
-//
-//	aB3!kZ$m9QxY7pL#nW2vR8dF0jH5... (70 characters)
-//	tK4gM1sA6bC3eI9oU0wX7yZ2qJ5r... (70 characters)
-//	fD8hN4lP0mV6kB1aS3cG9iO5uW7x... (70 characters)
-//	eR2tY4jL6nH8pF0qZ (remainder)
-//
-// This makes it much easier to read and lets the user follow along with a
-// finger on the screen while typing.
+// runChallengeLine reads a single line (used when stdin isn't a terminal).
+func runChallengeLine(challenge string) (bool, error) {
+	fmt.Print("Type the text above: ")
+	scanner := bufio.NewScanner(os.Stdin)
+	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+
+	if !scanner.Scan() {
+		if err := scanner.Err(); err != nil {
+			return false, fmt.Errorf("failed to read user input: %w", err)
+		}
+		return false, fmt.Errorf("empty input — no text was typed")
+	}
+	return finishAndCompare(scanner.Text(), challenge), nil
+}
+
+// finishAndCompare reports whether input matches challenge and prints a helpful
+// message on mismatch (pointing at the first differing position or a length
+// mismatch).
+func finishAndCompare(input, challenge string) bool {
+	if input == challenge {
+		fmt.Println("Unlock authorized! Challenge completed successfully.")
+		return true
+	}
+
+	fmt.Println("Incorrect text! Unlock denied.")
+
+	minLen := len(input)
+	if len(challenge) < minLen {
+		minLen = len(challenge)
+	}
+	for i := 0; i < minLen; i++ {
+		if input[i] != challenge[i] {
+			fmt.Printf("Error at position %d: expected '%c', typed '%c'\n", i+1, challenge[i], input[i])
+			return false
+		}
+	}
+	if len(input) < len(challenge) {
+		fmt.Printf("Text too short! You typed %d characters, but %d are required.\n", len(input), len(challenge))
+	} else if len(input) > len(challenge) {
+		fmt.Printf("Text too long! You typed %d characters, but %d are required.\n", len(input), len(challenge))
+	}
+	return false
+}
+
+// formatChallenge wraps text into fixed-width lines so a long challenge is
+// readable instead of running off the screen.
 func formatChallenge(text string, lineWidth int) string {
-	// If the text is shorter than the line width, no need to wrap.
 	if len(text) <= lineWidth {
 		return text
 	}
-
-	// strings.Builder is the efficient way to concatenate strings in Go.
-	// Every time you do s = s + "something", Go creates a new string in memory.
-	// The Builder avoids that by accumulating everything in an internal buffer.
 	var builder strings.Builder
-
 	for i := 0; i < len(text); i += lineWidth {
-		// Compute the end of the current chunk.
-		// If we're on the last chunk, the end is the total text length.
 		end := i + lineWidth
 		if end > len(text) {
 			end = len(text)
 		}
-
-		// Write the current chunk.
 		builder.WriteString(text[i:end])
-
-		// Add a newline, except after the last chunk.
 		if end < len(text) {
 			builder.WriteByte('\n')
 		}
 	}
-
 	return builder.String()
+}
+
+// bytesContains reports whether haystack contains needle.
+func bytesContains(haystack, needle []byte) bool {
+	if len(needle) == 0 {
+		return true
+	}
+	for i := 0; i+len(needle) <= len(haystack); i++ {
+		if string(haystack[i:i+len(needle)]) == string(needle) {
+			return true
+		}
+	}
+	return false
+}
+
+// isTerminal reports whether fd refers to a terminal.
+func isTerminal(fd int) bool {
+	_, err := unix.IoctlGetTermios(fd, unix.TCGETS)
+	return err == nil
+}
+
+// makeRaw puts the terminal into raw mode (no echo, no line buffering, no
+// signal generation) and returns a function that restores the previous state.
+// We handle Ctrl-C ourselves (as a cancel) since ISIG is disabled.
+func makeRaw(fd int) (func(), error) {
+	old, err := unix.IoctlGetTermios(fd, unix.TCGETS)
+	if err != nil {
+		return nil, err
+	}
+	saved := *old
+
+	raw := *old
+	raw.Iflag &^= unix.IGNBRK | unix.BRKINT | unix.PARMRK | unix.ISTRIP |
+		unix.INLCR | unix.IGNCR | unix.ICRNL | unix.IXON
+	raw.Lflag &^= unix.ECHO | unix.ECHONL | unix.ICANON | unix.ISIG | unix.IEXTEN
+	raw.Cflag &^= unix.CSIZE | unix.PARENB
+	raw.Cflag |= unix.CS8
+	raw.Cc[unix.VMIN] = 1
+	raw.Cc[unix.VTIME] = 0
+
+	if err := unix.IoctlSetTermios(fd, unix.TCSETS, &raw); err != nil {
+		return nil, err
+	}
+	return func() {
+		_ = unix.IoctlSetTermios(fd, unix.TCSETS, &saved)
+	}, nil
 }

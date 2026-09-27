@@ -2,70 +2,33 @@
 // Package blocker — Open Turkey's browser policy module
 // =============================================================================
 //
-// This file implements site blocking using browser "enterprise policies"
-// for Firefox and Chromium/Chrome.
+// This file implements site blocking using browser "enterprise policies" for
+// Firefox and the Chromium family (Chromium, Chrome, Brave, Edge, Opera,
+// Vivaldi).
 //
 // WHAT ARE BROWSER POLICIES?
 // --------------------------
-// Browsers like Firefox and Chrome are built to be used in large companies,
-// where the IT administrator needs to control what employees can and cannot
-// do. To support that, they read "policies" — JSON files that live in system
-// directories and that the browser loads automatically.
+// Browsers meant for managed/enterprise environments read "policy" files that
+// the OS administrator controls. Because the OS enforces them, the user cannot
+// disable them from inside the browser — not through settings, not in private
+// mode, not by removing an extension. Removing a policy requires root, which
+// (in Open Turkey's model) only the daemon has.
 //
-// These policies allow, for example:
-//   - Blocking access to specific sites (what we care about!)
-//   - Disabling extension installation
-//   - Forcing proxy settings
-//   - Disabling private browsing
+// WHAT WE SET
+// -----------
+//   - A URL blocklist (Chromium: "URLBlocklist"; Firefox: "WebsiteFilter") for
+//     the blocked domains.
+//   - DNS-over-HTTPS turned off (Chromium: "DnsOverHttpsMode":"off" +
+//     "BuiltInDnsClientEnabled":false; Firefox: "DNSOverHTTPS" disabled and
+//     locked). Without this, the browser could resolve names over HTTPS and
+//     skip /etc/hosts.
 //
-// WHY IS THIS SO EFFECTIVE?
-// -------------------------
-// Unlike extensions or browser settings, policies are applied by the
-// OPERATING SYSTEM. The user CANNOT disable them from inside the browser. It
-// doesn't matter if they go into settings, use private mode, or try any other
-// trick — policies are law.
-//
-// Removing a policy requires root access to the system to edit/delete the
-// JSON file. In Open Turkey's context, that means the block can only be
-// removed by the program's daemon (which runs as root), not by a user trying
-// to get around it.
-//
-// HOW DOES IT WORK IN PRACTICE?
-// -----------------------------
-// 1. We create JSON files in the system policy directories
-// 2. The browser picks these files up automatically (at startup AND while
-//    running — no restart needed!)
-// 3. The "WebsiteFilter" (Firefox) or "URLBlocklist" (Chromium) policy
-//    blocks the URL patterns we specify
-// 4. The browser shows an error page saying the site was blocked by the
-//    organization's policy
-//
-// NO EXTENSION REQUIRED!
-// ----------------------
-// Many site blockers rely on browser extensions, which the user can simply
-// disable. Here we use a mechanism owned by the operating system — far more
-// robust.
-//
-// DIFFERENCES BETWEEN FIREFOX AND CHROMIUM:
-// -----------------------------------------
-// Firefox:
-//   - File: /etc/firefox/policies/policies.json
-//   - Format: { "policies": { "WebsiteFilter": { "Block": [...] } } }
-//   - The file is SHARED — other policies may exist in the same file. So we
-//     need to MERGE our rules with the existing ones, without deleting
-//     anything that isn't ours.
-//
-// Chromium/Chrome:
-//   - File: /etc/chromium/policies/managed/open-turkey.json
-//   - Format: { "URLBlocklist": [...] }
-//   - Chromium reads ALL .json files inside the managed/ directory, so we can
-//     create a separate file that's ours alone (open-turkey.json). That's much
-//     simpler — no need to worry about merging.
-//   - Google Chrome uses a different directory:
-//     /etc/opt/chrome/policies/managed/open-turkey.json
-//   - Brave, also Chromium-based, uses its own directory:
-//     /etc/brave/policies/managed/open-turkey.json
-//     (older versions read /etc/chromium/, already covered by the file above).
+// FILE LAYOUT
+// -----------
+// Firefox uses a single shared policies.json, so we MERGE our keys and remove
+// only our keys on cleanup. Each Chromium-family browser reads every .json in
+// its managed/ directory, so we drop our own open-turkey.json per browser and
+// simply delete it on cleanup.
 //
 // =============================================================================
 package blocker
@@ -76,240 +39,168 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"net/url"
-	"strings"
 )
 
-// Policy file paths for each browser.
-//
-// Firefox uses a single shared policies.json file.
-// Chromium and Chrome use directories where each .json file is a separate
-// policy — that's why we create "open-turkey.json", a file that's ours alone.
-const (
-	// firefoxPolicyPath is Firefox's policy file.
-	// Firefox looks for this file automatically at startup.
-	// If the file doesn't exist, Firefox simply ignores it and carries on
-	// without policies — so we don't break anything by creating/removing it.
-	firefoxPolicyPath = "/etc/firefox/policies/policies.json"
+// firefoxPolicyPath is Firefox's shared policy file.
+const firefoxPolicyPath = "/etc/firefox/policies/policies.json"
 
-	// chromiumPolicyPath is Chromium's policy file.
-	// Chromium reads every .json inside /etc/chromium/policies/managed/,
-	// so our file coexists peacefully with any others that may exist.
-	chromiumPolicyPath = "/etc/chromium/policies/managed/open-turkey.json"
-
-	// chromePolicyPath is Google Chrome's policy file.
-	// Chrome uses a different directory from Chromium, even though it's built
-	// from the same code. That's because the Chrome install puts its files in
-	// /etc/opt/chrome/ instead of /etc/chromium/.
-	chromePolicyPath = "/etc/opt/chrome/policies/managed/open-turkey.json"
-
-	// bravePolicyPath is Brave's policy file.
-	// Brave is Chromium-based and uses the same format (URLBlocklist), but it
-	// moved to its own directory under /etc/brave/. Older Brave versions read
-	// /etc/chromium/policies/managed/, which is already covered by the
-	// Chromium file above — so adding this path is enough.
-	bravePolicyPath = "/etc/brave/policies/managed/open-turkey.json"
-)
+// chromiumPolicyPaths lists the managed-policy file we write for each
+// Chromium-family browser. They share the same URLBlocklist format but each
+// reads a different directory. Writing a file whose directory doesn't exist
+// yet is fine — os.MkdirAll creates it, so the policy is ready if the user
+// installs that browser later.
+var chromiumPolicyPaths = []string{
+	"/etc/chromium/policies/managed/open-turkey.json",   // Chromium
+	"/etc/opt/chrome/policies/managed/open-turkey.json", // Google Chrome
+	"/etc/brave/policies/managed/open-turkey.json",      // Brave
+	"/etc/opt/edge/policies/managed/open-turkey.json",   // Microsoft Edge
+	"/etc/opt/opera/policies/managed/open-turkey.json",  // Opera
+	"/etc/vivaldi/policies/managed/open-turkey.json",    // Vivaldi
+}
 
 // =============================================================================
-// Public functions — the interface the rest of Open Turkey uses
+// Public functions
 // =============================================================================
 
-// ApplyBrowserPolicies creates the blocking policies for every browser.
+// ApplyBrowserPolicies writes the blocking policies for every browser.
 //
-// WARNING — Firefox and Chromium use DIFFERENT pattern formats, and treating
-// them as the same has already caused a production bug (subdomains like
-// folha.uol.com.br got through in Brave/Chrome). So we generate TWO sets:
+// Firefox and Chromium use DIFFERENT pattern formats (treating them the same
+// once let subdomains through), so we build two sets:
 //
-//   - Firefox (WebsiteFilter): match patterns in the style "*://*.domain.com/*".
-//     The asterisk in the scheme covers http/https, "*." covers subdomains and
-//     "/*" covers any path. See firefoxPatterns.
-//
-//   - Chromium/Chrome/Brave (URLBlocklist): the format is
-//     "[scheme://][.]host[:port][/path][@query]" and it does NOT accept
-//     wildcards like "*://*.host/*" — malformed filters are silently dropped.
-//     Here a plain "domain.com" filter already matches the root domain AND all
-//     subdomains AND all paths. See chromiumFilters.
+//   - Firefox (WebsiteFilter): match patterns like "*://*.domain.com/*".
+//   - Chromium/Chrome/Brave/Edge/Opera/Vivaldi (URLBlocklist): a bare
+//     "domain.com" filter, which already matches the root, all subdomains and
+//     all paths. Wildcards are invalid there and are silently dropped.
 //     Ref.: https://www.chromium.org/administrators/url-blocklist-filter-format/
+//
+// With no valid domains, the policies are removed instead of written empty, so
+// an apps-only block leaves no policy files behind.
 func ApplyBrowserPolicies(domains []string) error {
-	// Step 1: Build the patterns/filters — one set per format.
-	ffPatterns := firefoxPatterns(domains)
-	crFilters := chromiumFilters(domains)
+	valid := ValidDomains(domains)
+	if len(valid) == 0 {
+		return RemoveBrowserPolicies()
+	}
 
-	// Step 2: Apply the Firefox policy.
-	// Firefox uses its own format with "WebsiteFilter" inside "policies".
-	// Since the file may already exist with other policies, we merge.
+	ffPatterns := firefoxPatterns(valid)
+	crFilters := chromiumFilters(valid)
+
 	if err := applyFirefoxPolicy(ffPatterns); err != nil {
 		return fmt.Errorf("failed to apply Firefox policy: %w", err)
 	}
 
-	// Step 3: Apply the Chromium policy.
-	// Chromium uses "URLBlocklist" and accepts separate files per policy.
-	if err := applyChromiumPolicy(chromiumPolicyPath, crFilters); err != nil {
-		return fmt.Errorf("failed to apply Chromium policy: %w", err)
-	}
-
-	// Step 4: Apply the Google Chrome policy.
-	// Chrome uses the same format as Chromium, but in a different directory.
-	if err := applyChromiumPolicy(chromePolicyPath, crFilters); err != nil {
-		return fmt.Errorf("failed to apply Google Chrome policy: %w", err)
-	}
-
-	// Step 5: Apply the Brave policy.
-	// Brave also uses the Chromium format, under /etc/brave/.
-	if err := applyChromiumPolicy(bravePolicyPath, crFilters); err != nil {
-		return fmt.Errorf("failed to apply Brave policy: %w", err)
+	for _, path := range chromiumPolicyPaths {
+		if err := applyChromiumPolicy(path, crFilters); err != nil {
+			return fmt.Errorf("failed to apply policy at %s: %w", path, err)
+		}
 	}
 
 	return nil
 }
 
-// RemoveBrowserPolicies removes the blocking policies from every browser.
+// RemoveBrowserPolicies removes our blocking policies from every browser.
 //
-// The removal strategy differs per browser:
-//
-// Firefox: The policies.json file may contain OTHER policies besides ours.
-// So we CANNOT simply delete the file. Instead:
-//   - If the file only has our WebsiteFilter policy: we delete the file
-//   - If it has other policies besides ours: we remove only WebsiteFilter
-//
-// Chromium/Chrome: Since we use a separate file (open-turkey.json), we just
-// delete it. Other policy files in the same directory are unaffected.
+// Firefox's file may hold other policies, so we strip only our keys (and
+// delete the file if nothing else remains). Each Chromium file is ours alone,
+// so we delete it.
 func RemoveBrowserPolicies() error {
-	// Step 1: Remove the Firefox policy (being careful not to delete other
-	// policies that may exist in the same file).
 	if err := removeFirefoxPolicy(); err != nil {
 		return fmt.Errorf("failed to remove Firefox policy: %w", err)
 	}
-
-	// Step 2: Remove the Chromium policy.
-	// We simply delete our file. If it doesn't exist, that's fine.
-	if err := removePolicyFile(chromiumPolicyPath); err != nil {
-		return fmt.Errorf("failed to remove Chromium policy: %w", err)
+	for _, path := range chromiumPolicyPaths {
+		if err := removePolicyFile(path); err != nil {
+			return fmt.Errorf("failed to remove policy at %s: %w", path, err)
+		}
 	}
-
-	// Step 3: Remove the Google Chrome policy.
-	if err := removePolicyFile(chromePolicyPath); err != nil {
-		return fmt.Errorf("failed to remove Google Chrome policy: %w", err)
-	}
-
-	// Step 4: Remove the Brave policy.
-	if err := removePolicyFile(bravePolicyPath); err != nil {
-		return fmt.Errorf("failed to remove Brave policy: %w", err)
-	}
-
 	return nil
 }
 
-// IsBrowserPoliciesApplied checks whether the blocking policies are active
-// for EVERY browser that has a policy directory on the system.
-//
-// The check is strict: it returns true ONLY if every expected domain is
-// present in EVERY applicable policy file. If any installed browser lacks the
-// correct policy, it returns false.
-//
-// This matters for detecting whether someone manually edited the policy
-// files trying to get around the block.
+// IsBrowserPoliciesApplied reports whether the policies are correct for every
+// browser whose policy directory exists. It is strict: any missing filter, any
+// tampered blocklist, or a missing DoH-off setting makes it return false so the
+// daemon reapplies. With no domains, "applied" means our policies are absent.
 func IsBrowserPoliciesApplied(domains []string) bool {
-	// Build the expected patterns/filters — one set per format, the same as
-	// what ApplyBrowserPolicies writes. Checking Chromium against the Firefox
-	// format (or vice versa) would make the daemon think the policy always
-	// diverges and reapply it every 5s for no reason.
-	ffPatterns := firefoxPatterns(domains)
-	crFilters := chromiumFilters(domains)
-
-	if len(ffPatterns) == 0 || len(crFilters) == 0 {
-		return false
+	valid := ValidDomains(domains)
+	if len(valid) == 0 {
+		return !BrowserPoliciesPresent()
 	}
 
-	// Firefox check:
-	// We only check if Firefox's policy directory exists,
-	// which indicates that Firefox is installed on the system.
-	firefoxDir := filepath.Dir(firefoxPolicyPath)
-	if dirExists(firefoxDir) {
+	ffPatterns := firefoxPatterns(valid)
+	crFilters := chromiumFilters(valid)
+
+	if dirExists(filepath.Dir(firefoxPolicyPath)) {
 		if !checkFirefoxPolicy(ffPatterns) {
 			return false
 		}
 	}
 
-	// Chromium check:
-	// Same reasoning — we only check if the parent directory exists.
-	chromiumDir := filepath.Dir(chromiumPolicyPath)
-	if dirExists(chromiumDir) {
-		if !checkChromiumPolicy(chromiumPolicyPath, crFilters) {
-			return false
-		}
-	}
-
-	// Google Chrome check:
-	chromeDir := filepath.Dir(chromePolicyPath)
-	if dirExists(chromeDir) {
-		if !checkChromiumPolicy(chromePolicyPath, crFilters) {
-			return false
-		}
-	}
-
-	// Brave check:
-	braveDir := filepath.Dir(bravePolicyPath)
-	if dirExists(braveDir) {
-		if !checkChromiumPolicy(bravePolicyPath, crFilters) {
-			return false
+	for _, path := range chromiumPolicyPaths {
+		if dirExists(filepath.Dir(path)) {
+			if !checkChromiumPolicy(path, crFilters) {
+				return false
+			}
 		}
 	}
 
 	return true
 }
 
+// BrowserPoliciesPresent reports whether any of our policy artifacts still
+// exist (any Chromium file, or Firefox's WebsiteFilter key). The daemon uses it
+// to decide whether an idle cleanup is needed.
+func BrowserPoliciesPresent() bool {
+	for _, path := range chromiumPolicyPaths {
+		if _, err := os.Stat(path); err == nil {
+			return true
+		}
+	}
+
+	content, err := os.ReadFile(firefoxPolicyPath)
+	if err != nil {
+		return false
+	}
+	var root map[string]interface{}
+	if json.Unmarshal(content, &root) != nil {
+		return false
+	}
+	policies, ok := root["policies"].(map[string]interface{})
+	if !ok {
+		return false
+	}
+	_, hasFilter := policies["WebsiteFilter"]
+	_, hasDoH := policies["DNSOverHTTPS"]
+	return hasFilter || hasDoH
+}
+
 // =============================================================================
-// Helper functions — URL pattern generation
+// URL pattern generation
 // =============================================================================
 
 // stripWWWPrefix removes a leading "www." from a host, but only when what's
-// left is a domain with at least two labels. Without this guard, a
-// single-label host like "www.com" (a real registrable domain) would become
-// "com" — and Chromium's bare filter / Firefox's "*://*.com/*" wildcard would
-// then match ALL of ".com".
+// left still has at least two labels, so a single-label registrable domain
+// like "www.com" is never reduced to the whole ".com" TLD.
 func stripWWWPrefix(host string) string {
-	withoutWWW := strings.TrimPrefix(host, "www.")
-	if strings.Contains(withoutWWW, ".") {
-		return withoutWWW
+	if len(host) > 4 && host[:4] == "www." {
+		rest := host[4:]
+		for i := 0; i < len(rest); i++ {
+			if rest[i] == '.' {
+				return rest
+			}
+		}
 	}
 	return host
 }
 
-// firefoxPatterns converts domains into match patterns for Firefox's
-// WebsiteFilter policy.
-//
-// For each domain, it generates two patterns:
-//   - *://*.domain.com/*  → subdomains (www, m, app, etc.)
-//   - *://domain.com/*    → root domain
-//
-// The *://.../* format is what Firefox's WebsiteFilter expects:
-//   - *://  → any scheme (http, https, etc.)
-//   - *.    → any subdomain
-//   - /*    → any path within the site
-//
-// IMPORTANT: this format does NOT work for the Chromium/Chrome/Brave
-// URLBlocklist (which drops these wildcards) — for that family, use
-// chromiumFilters.
+// firefoxPatterns builds Firefox WebsiteFilter match patterns: for each domain,
+// "*://domain/*" (root) and "*://*.base/*" (subdomains). Deduplicated, sorted.
 func firefoxPatterns(domains []string) []string {
 	set := make(map[string]bool)
-
-	for _, domain := range domains {
-		host := NormalizeDomain(domain)
+	for _, host := range domains {
 		if host == "" {
 			continue
 		}
-
-		// Pattern 1: block the exact host (e.g. *://facebook.com/*)
 		set[fmt.Sprintf("*://%s/*", host)] = true
-
-		// Pattern 2: block subdomains. If the host starts with "www.",
-		// we build the wildcard on the host without www (avoids "*.www.*").
-		base := stripWWWPrefix(host)
-		set[fmt.Sprintf("*://*.%s/*", base)] = true
+		set[fmt.Sprintf("*://*.%s/*", stripWWWPrefix(host))] = true
 	}
-
 	patterns := make([]string, 0, len(set))
 	for p := range set {
 		patterns = append(patterns, p)
@@ -318,36 +209,16 @@ func firefoxPatterns(domains []string) []string {
 	return patterns
 }
 
-// chromiumFilters converts domains into URLBlocklist-format filters, used by
-// Chromium, Google Chrome and Brave.
-//
-// URLBlocklist does NOT use match patterns like Firefox. The format is
-// "[scheme://][.]host[:port][/path][@query]" and a plain filter like
-// "uol.com.br" already matches the root domain AND all subdomains (www, m,
-// folha, ...) AND all paths. Wildcards like "*://*.host/*" are INVALID and
-// the browser silently drops them — that was the bug that let subdomains
-// (e.g. folha.uol.com.br) through even with uol.com.br blocked.
-// Ref.: https://www.chromium.org/administrators/url-blocklist-filter-format/
-//
-// So we generate ONE filter per domain, always the base host: we strip any
-// "www." prefix because the bare filter already covers root and subdomains,
-// and a leading "." would restrict exactly what we want to catch.
+// chromiumFilters builds URLBlocklist filters: one bare host per domain (which
+// covers root, subdomains and paths). Deduplicated, sorted.
 func chromiumFilters(domains []string) []string {
 	set := make(map[string]bool)
-
-	for _, domain := range domains {
-		host := NormalizeDomain(domain)
+	for _, host := range domains {
 		if host == "" {
 			continue
 		}
-
-		// The bare "domain.com" filter already covers "www.domain.com" and
-		// other subdomains, so we normalize by stripping "www." from the input.
-		host = stripWWWPrefix(host)
-
-		set[host] = true
+		set[stripWWWPrefix(host)] = true
 	}
-
 	filters := make([]string, 0, len(set))
 	for f := range set {
 		filters = append(filters, f)
@@ -356,406 +227,218 @@ func chromiumFilters(domains []string) []string {
 	return filters
 }
 
-func NormalizeDomain(input string) string {
-	s := strings.TrimSpace(strings.ToLower(input))
-	if s == "" {
-		return ""
-	}
-
-	// If it's a full URL, extract the host.
-	if strings.Contains(s, "://") {
-		u, err := url.Parse(s)
-		if err == nil && u != nil && u.Host != "" {
-			s = u.Host
-		}
-	}
-
-	// Remove any path (e.g. "example.com/foo").
-	if i := strings.IndexByte(s, '/'); i >= 0 {
-		s = s[:i]
-	}
-
-	// Remove port (e.g. "example.com:443").
-	if i := strings.LastIndexByte(s, ':'); i >= 0 && !strings.Contains(s, "]") {
-		s = s[:i]
-	}
-
-	s = strings.TrimSpace(strings.TrimSuffix(s, "."))
-	if s == "" {
-		return ""
-	}
-
-	return s
-}
-
 // =============================================================================
-// Helper functions — Firefox
+// Firefox
 // =============================================================================
 
-// applyFirefoxPolicy creates or updates Firefox's policy file.
-//
-// Firefox's policies.json file has a nested structure:
-//
-//	{
-//	    "policies": {
-//	        "WebsiteFilter": {
-//	            "Block": [
-//	                "*://*.facebook.com/*",
-//	                "*://facebook.com/*"
-//	            ]
-//	        },
-//	        ... (other policies may exist here)
-//	    }
-//	}
-//
-// If the file already exists, we need to MERGE: read the existing JSON, add
-// our patterns to the "Block" array (without duplicating), and write it back.
-// If the file doesn't exist, we create it from scratch.
+// applyFirefoxPolicy writes our keys into Firefox's policies.json, preserving
+// any unrelated policies already present. We overwrite (not merge) our own
+// WebsiteFilter.Block so that removing a domain actually unblocks it, and we
+// force DNS-over-HTTPS off and locked.
 func applyFirefoxPolicy(patterns []string) error {
-	// Step 1: Create the policy directory if it doesn't exist.
-	// os.MkdirAll creates every directory in the path, like "mkdir -p" in the
-	// terminal. If they already exist, it does nothing (idempotent).
-	// Permission 0755: owner can do everything (7), group and others can read
-	// and enter (5).
 	dir := filepath.Dir(firefoxPolicyPath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("failed to create directory %s: %w", dir, err)
 	}
 
-	// Step 2: Try to read the existing file.
-	// If the file already exists, we load its contents to preserve any other
-	// policies that may be configured.
-	// If it doesn't exist, we start with an empty map.
-	rootPolicy := make(map[string]interface{})
-
-	existingContent, err := os.ReadFile(firefoxPolicyPath)
-	if err == nil && len(existingContent) > 0 {
-		// The file exists and has content — decode the JSON.
-		// json.Unmarshal converts the JSON (text) into a Go map (data structure).
-		if err := json.Unmarshal(existingContent, &rootPolicy); err != nil {
-			// If the JSON is malformed, we don't want to lose data.
-			// But we also need to apply our policy. In that case,
-			// we log the error and start from scratch.
-			rootPolicy = make(map[string]interface{})
+	root := make(map[string]interface{})
+	if content, err := os.ReadFile(firefoxPolicyPath); err == nil && len(content) > 0 {
+		if json.Unmarshal(content, &root) != nil {
+			root = make(map[string]interface{})
 		}
 	}
 
-	// Step 3: Navigate to the "policies" level in the map.
-	// If "policies" doesn't exist yet, we create an empty map.
-	policies, ok := rootPolicy["policies"].(map[string]interface{})
+	policies, ok := root["policies"].(map[string]interface{})
 	if !ok {
-		// "policies" doesn't exist or isn't a map — create from scratch.
 		policies = make(map[string]interface{})
 	}
 
-	// Step 4: Navigate to "WebsiteFilter" inside "policies".
 	websiteFilter, ok := policies["WebsiteFilter"].(map[string]interface{})
 	if !ok {
 		websiteFilter = make(map[string]interface{})
 	}
+	blocks := make([]string, 0, len(patterns))
+	blocks = append(blocks, patterns...)
+	websiteFilter["Block"] = blocks
+	policies["WebsiteFilter"] = websiteFilter
 
-	// Step 5: Update the "Block" array to reflect EXACTLY the current state.
-	// We don't merge here, because merging prevents removals (Firefox would
-	// keep blocking old patterns even after the user removed a domain).
-	finalBlocks := make([]string, 0, len(patterns))
-	for _, p := range patterns {
-		finalBlocks = append(finalBlocks, p)
+	// Turn DNS-over-HTTPS off and lock it so it can't be re-enabled to bypass
+	// /etc/hosts.
+	policies["DNSOverHTTPS"] = map[string]interface{}{
+		"Enabled": false,
+		"Locked":  true,
 	}
 
-	// Step 6: Rebuild the JSON structure and write the file.
-	websiteFilter["Block"] = finalBlocks
-	policies["WebsiteFilter"] = websiteFilter
-	rootPolicy["policies"] = policies
-
-	return writeJSON(firefoxPolicyPath, rootPolicy)
+	root["policies"] = policies
+	return writeJSON(firefoxPolicyPath, root)
 }
 
-// removeFirefoxPolicy removes the Firefox blocking policy.
-//
-// There are two scenarios:
-//   - If the policies.json file ONLY contains our WebsiteFilter policy:
-//     we delete the whole file (full cleanup).
-//   - If it has OTHER policies besides ours: we remove only WebsiteFilter
-//     and write the file back with the rest preserved.
-//
-// This matters so we don't delete settings the system administrator may
-// have made independently of Open Turkey.
+// removeFirefoxPolicy strips only our keys (WebsiteFilter, DNSOverHTTPS) from
+// Firefox's policies.json, deleting the file if nothing else remains.
 func removeFirefoxPolicy() error {
-	// Step 1: Try to read the existing file.
-	// If it doesn't exist, there's nothing to remove — success!
 	content, err := os.ReadFile(firefoxPolicyPath)
 	if err != nil {
-		// If the error is "file not found", all is well.
-		// Any other error (permissions, etc.) is a real problem.
 		if os.IsNotExist(err) {
 			return nil
 		}
 		return fmt.Errorf("failed to read %s: %w", firefoxPolicyPath, err)
 	}
 
-	// Step 2: Decode the existing JSON.
-	var rootPolicy map[string]interface{}
-	if err := json.Unmarshal(content, &rootPolicy); err != nil {
-		// Malformed JSON — we can just delete the file,
-		// since it doesn't contain valid data anyway.
+	var root map[string]interface{}
+	if json.Unmarshal(content, &root) != nil {
 		return os.Remove(firefoxPolicyPath)
 	}
 
-	// Step 3: Check whether "policies" exists.
-	policies, ok := rootPolicy["policies"].(map[string]interface{})
+	policies, ok := root["policies"].(map[string]interface{})
 	if !ok {
-		// Without "policies", the file doesn't have our rules. Nothing to do.
 		return nil
 	}
 
-	// Step 4: Remove WebsiteFilter.
 	delete(policies, "WebsiteFilter")
+	delete(policies, "DNSOverHTTPS")
 
-	// Step 5: Decide whether to delete the file or write it without WebsiteFilter.
-	// If "policies" is empty after removing WebsiteFilter, the file is no
-	// longer useful — we can delete it.
 	if len(policies) == 0 {
-		// The file only had our policy — delete everything.
 		if err := os.Remove(firefoxPolicyPath); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("failed to remove %s: %w", firefoxPolicyPath, err)
 		}
 		return nil
 	}
 
-	// Other policies still exist — write the file without WebsiteFilter.
-	rootPolicy["policies"] = policies
-	return writeJSON(firefoxPolicyPath, rootPolicy)
+	root["policies"] = policies
+	return writeJSON(firefoxPolicyPath, root)
 }
 
-// checkFirefoxPolicy checks whether the WebsiteFilter.Block array in the
-// Firefox policy file contains EXACTLY the expected patterns.
-//
-// Since ApplyBrowserPolicies overwrites Block in full, the correct state is
-// set equality: no pattern missing, no extra pattern. If there's a mismatch
-// in either direction (including an extra/tampered entry), it returns false
-// so the daemon reapplies.
-func checkFirefoxPolicy(expectedPatterns []string) bool {
-	// Read and decode the policy file.
+// checkFirefoxPolicy verifies WebsiteFilter.Block is exactly the expected set
+// and that DNS-over-HTTPS is present and disabled.
+func checkFirefoxPolicy(expected []string) bool {
 	content, err := os.ReadFile(firefoxPolicyPath)
 	if err != nil {
 		return false
 	}
-
-	var rootPolicy map[string]interface{}
-	if err := json.Unmarshal(content, &rootPolicy); err != nil {
+	var root map[string]interface{}
+	if json.Unmarshal(content, &root) != nil {
 		return false
 	}
-
-	// Navigate to policies → WebsiteFilter → Block.
-	policies, ok := rootPolicy["policies"].(map[string]interface{})
+	policies, ok := root["policies"].(map[string]interface{})
 	if !ok {
 		return false
 	}
-
 	websiteFilter, ok := policies["WebsiteFilter"].(map[string]interface{})
 	if !ok {
 		return false
 	}
+	if !sameSet(stringsFromInterface(websiteFilter["Block"]), expected) {
+		return false
+	}
 
-	existingBlocks := stringsFromInterface(websiteFilter["Block"])
-
-	return sameSet(existingBlocks, expectedPatterns)
+	doh, ok := policies["DNSOverHTTPS"].(map[string]interface{})
+	if !ok {
+		return false
+	}
+	enabled, ok := doh["Enabled"].(bool)
+	return ok && !enabled
 }
 
 // =============================================================================
-// Helper functions — Chromium / Google Chrome
+// Chromium family
 // =============================================================================
 
-// applyChromiumPolicy creates the policy file for Chromium, Chrome or Brave
-// (same URLBlocklist format, different directories).
-//
-// The format is simpler than Firefox's — one bare filter per domain, which
-// already covers root, subdomains and paths (see chromiumFilters):
-//
-//	{
-//	    "URLBlocklist": [
-//	        "facebook.com"
-//	    ]
-//	}
-//
-// Since we use a separate file (open-turkey.json), we don't need to worry
-// about merging — we simply overwrite the file.
-//
-// The filePath parameter lets us reuse this function for Chromium, Chrome
-// and Brave, which use different directories but the same format.
-func applyChromiumPolicy(filePath string, patterns []string) error {
-	// Step 1: Create the policy directory if it doesn't exist.
-	// If the parent directory doesn't exist, the browser probably isn't
-	// installed. We create the directory anyway — if the user installs the
-	// browser later, the policy will already be there waiting.
-	dir := filepath.Dir(filePath)
+// applyChromiumPolicy writes our managed-policy file for one Chromium-family
+// browser: the URL blocklist plus DNS-over-HTTPS turned off.
+func applyChromiumPolicy(path string, filters []string) error {
+	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("failed to create directory %s: %w", dir, err)
 	}
-
-	// Step 2: Build the policy structure.
-	// Chromium reads the "URLBlocklist" key automatically — it doesn't need
-	// a nested "policies" structure like Firefox.
 	policy := map[string]interface{}{
-		"URLBlocklist": patterns,
+		"URLBlocklist":            filters,
+		"DnsOverHttpsMode":        "off",
+		"BuiltInDnsClientEnabled": false,
 	}
-
-	return writeJSON(filePath, policy)
+	return writeJSON(path, policy)
 }
 
-// checkChromiumPolicy checks whether the URLBlocklist array in the
-// Chromium/Chrome/Brave policy file contains EXACTLY the expected filters.
-//
-// open-turkey.json is a file that's exclusively ours, overwritten in full on
-// every ApplyBrowserPolicies. So the correct state is set equality: any
-// mismatch (missing filter OR extra/tampered entry) returns false so the
-// daemon reapplies.
-func checkChromiumPolicy(filePath string, expectedPatterns []string) bool {
-	content, err := os.ReadFile(filePath)
+// checkChromiumPolicy verifies URLBlocklist is exactly the expected set and
+// that DNS-over-HTTPS is off.
+func checkChromiumPolicy(path string, expected []string) bool {
+	content, err := os.ReadFile(path)
 	if err != nil {
 		return false
 	}
-
 	var policy map[string]interface{}
-	if err := json.Unmarshal(content, &policy); err != nil {
+	if json.Unmarshal(content, &policy) != nil {
 		return false
 	}
-
-	existingBlocks := stringsFromInterface(policy["URLBlocklist"])
-
-	return sameSet(existingBlocks, expectedPatterns)
+	if !sameSet(stringsFromInterface(policy["URLBlocklist"]), expected) {
+		return false
+	}
+	mode, ok := policy["DnsOverHttpsMode"].(string)
+	return ok && mode == "off"
 }
 
 // =============================================================================
-// Generic helper functions
+// Generic helpers
 // =============================================================================
 
-// removePolicyFile deletes a policy file from the system.
-//
-// Used to remove the Chromium and Chrome files, which are exclusive to
-// Open Turkey (open-turkey.json) and can simply be deleted.
-//
-// If the file no longer exists, it returns nil (no error) — the function is
-// idempotent. "Idempotent" means calling it several times has the same effect
-// as calling it once. That's useful for robustness: if the program crashes,
-// we can try removing again without problems.
-func removePolicyFile(filePath string) error {
-	err := os.Remove(filePath)
-	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("failed to remove %s: %w", filePath, err)
+// removePolicyFile deletes a policy file, treating "already gone" as success.
+func removePolicyFile(path string) error {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to remove %s: %w", path, err)
 	}
 	return nil
 }
 
-// writeJSON serializes a Go map to formatted JSON and writes it to a file.
-//
-// Uses json.MarshalIndent to produce readable JSON, indented with 2 spaces.
-// This matters because:
-//   - System administrators may want to inspect the files
-//   - Minified JSON (no whitespace) is hard to read and debug
-//   - 2 spaces is the most common convention for config files
-//
-// Permission 0644:
-//   - Owner (root): can read and write (6 = 4+2)
-//   - Group: can only read (4)
-//   - Others: can only read (4)
-// Every user needs to read the file (the browser runs as a normal user, not
-// as root), but only root can modify it.
-func writeJSON(filePath string, data interface{}) error {
-	// json.MarshalIndent converts the Go structure into a JSON string.
-	// The first empty argument ("") is the prefix for each line.
-	// The second argument ("  ") is the indentation — 2 spaces.
+// writeJSON marshals data to indented JSON and writes it atomically with mode
+// 0644 (browsers run as an ordinary user and must be able to read it; only
+// root may modify it).
+func writeJSON(path string, data interface{}) error {
 	jsonBytes, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to serialize JSON: %w", err)
 	}
-
-	// Add a trailing newline at the end of the file.
-	// This is a Unix convention: text files should end with a newline so that
-	// tools like "cat" display them correctly.
 	jsonBytes = append(jsonBytes, '\n')
-
-	if err := os.WriteFile(filePath, jsonBytes, 0644); err != nil {
-		return fmt.Errorf("failed to write %s: %w", filePath, err)
+	if err := atomicWriteFile(path, jsonBytes, 0644); err != nil {
+		return fmt.Errorf("failed to write %s: %w", path, err)
 	}
-
 	return nil
 }
 
-// stringsFromInterface converts an interface{} value (which may be a decoded
-// JSON array) into a Go string slice.
-//
-// When we decode generic JSON with json.Unmarshal into a
-// map[string]interface{}, arrays become []interface{} (not []string).
-// Each array element is an interface{} that must be converted to a string
-// individually.
-//
-// Example: the JSON ["a", "b"] is decoded to []interface{}{"a", "b"}
-// and this function converts it to []string{"a", "b"}.
-//
-// If the value isn't an array, or if some element isn't a string, we simply
-// ignore it (we return whatever we managed to convert).
+// stringsFromInterface converts a decoded JSON array (as []interface{}) into a
+// []string, skipping non-string elements.
 func stringsFromInterface(value interface{}) []string {
-	// Try converting to []interface{} — the type json.Unmarshal uses to
-	// represent JSON arrays.
 	array, ok := value.([]interface{})
 	if !ok {
 		return nil
 	}
-
 	var result []string
 	for _, item := range array {
-		// Try converting each item to a string.
-		// If it's not a string (e.g. a number), we ignore it.
 		if str, ok := item.(string); ok {
 			result = append(result, str)
 		}
 	}
-
 	return result
 }
 
-// sameSet returns true if the two slices contain the SAME set of strings,
-// ignoring order and duplicates. Since the expected values already come
-// deduplicated and sorted from the generators, it's enough to compare the
-// size of the existing set to the number of expected values and confirm that
-// every expected value is present.
+// sameSet reports whether two slices hold the same set of strings, ignoring
+// order and duplicates.
 func sameSet(existing, expected []string) bool {
-	existingSet := make(map[string]bool, len(existing))
+	set := make(map[string]bool, len(existing))
 	for _, e := range existing {
-		existingSet[e] = true
+		set[e] = true
 	}
-
-	if len(existingSet) != len(expected) {
+	if len(set) != len(expected) {
 		return false
 	}
-
 	for _, e := range expected {
-		if !existingSet[e] {
+		if !set[e] {
 			return false
 		}
 	}
-
 	return true
 }
 
-// dirExists checks whether a directory exists on the file system.
-//
-// Used to determine whether a browser is "installed" — if the policy
-// directory exists, we assume the browser is present.
-// This heuristic isn't perfect (the directory may exist without the browser,
-// or the browser may be installed without the directory), but it's good
-// enough for our purpose.
-//
-// Important detail for whoever touches this: after the first start, the
-// Chromium-family directories (Chromium, Chrome, Brave) exist even without the
-// browser installed, because applyChromiumPolicy creates them with
-// os.MkdirAll on purpose — so the policy is ready in case the user installs
-// the browser later. This does NOT weaken IsBrowserPoliciesApplied: since
-// apply also writes the file, the directory's presence matches the presence
-// of the correct file, and the only way to have "directory exists but file
-// missing/divergent" is tampering — exactly what the daemon should detect and
-// reapply.
+// dirExists reports whether path exists and is a directory (our heuristic for
+// "this browser is installed").
 func dirExists(path string) bool {
 	info, err := os.Stat(path)
 	if err != nil {

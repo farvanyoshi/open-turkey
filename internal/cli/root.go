@@ -26,6 +26,11 @@ import (
 var rootCmd = &cobra.Command{
 	Use:   "open-turkey",
 	Short: "A command-line productivity blocker for Linux",
+	// Execute() prints errors itself, so tell Cobra not to also print the
+	// error and dump usage on a runtime failure (that produced noisy,
+	// duplicated output).
+	SilenceUsage:  true,
+	SilenceErrors: true,
 }
 
 // Execute initializes and runs Cobra's root command.

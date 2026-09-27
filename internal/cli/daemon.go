@@ -31,11 +31,13 @@
 // /etc/systemd/system/.
 //
 // Manual usage example (for debugging):
-//   sudo open-turkey daemon
+//
+//	sudo open-turkey daemon
 //
 // Usage via systemd (the right way):
-//   sudo systemctl start open-turkey
-//   sudo systemctl enable open-turkey   # starts automatically at boot
+//
+//	sudo systemctl start open-turkey
+//	sudo systemctl enable open-turkey   # starts automatically at boot
 package cli
 
 import (
@@ -67,7 +69,8 @@ var daemonCmd = &cobra.Command{
 // init() registers the daemon command as a child of rootCmd.
 //
 // After this registration, the user can run:
-//   open-turkey daemon
+//
+//	open-turkey daemon
 //
 // Go calls init() automatically when the package is loaded.
 // Since every file in the "cli" package is loaded together,

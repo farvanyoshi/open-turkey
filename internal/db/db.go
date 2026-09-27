@@ -9,6 +9,7 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"os"
 	"strings"
 
 	// Import the pure-Go SQLite driver. The underscore (_) in front means we
@@ -21,6 +22,22 @@ import (
 // We use /var/lib/ because it's the standard Linux directory for persistent
 // application data (following the Filesystem Hierarchy Standard — FHS).
 const DefaultDBPath = "/var/lib/open-turkey/open-turkey.db"
+
+// dbPathEnv, when set, overrides the database path. This exists mainly so the
+// CLI and tests can run against a scratch database without root. The installed
+// systemd unit never sets it, so the daemon always uses DefaultDBPath in
+// production — a user can't point the daemon at an empty database without
+// already having root (in which case the whole tool is bypassable anyway).
+const dbPathEnv = "OPEN_TURKEY_DB"
+
+// ResolveDBPath returns the database path to use: the OPEN_TURKEY_DB override
+// if set, otherwise DefaultDBPath.
+func ResolveDBPath() string {
+	if p := os.Getenv(dbPathEnv); p != "" {
+		return p
+	}
+	return DefaultDBPath
+}
 
 // --------------------------------------------------------------------------
 // Types (structs) — represent the data flowing between the database and the app

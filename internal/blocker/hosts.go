@@ -62,10 +62,14 @@ const (
 // ApplyHosts takes a list of domains and blocks all of them in /etc/hosts.
 //
 // The process is:
-//  1. Read the current contents of /etc/hosts (to preserve system entries)
-//  2. Remove any previous Open Turkey section (avoids duplicates)
-//  3. Build a new section with every domain pointing to 0.0.0.0
-//  4. Write the file back with the correct permissions (0644)
+//  1. Normalize and validate the domains (invalid entries are dropped)
+//  2. Read the current contents of /etc/hosts (to preserve system entries)
+//  3. Remove any previous Open Turkey section (avoids duplicates)
+//  4. Build a new section with every domain pointing to 0.0.0.0
+//  5. Write the file back atomically with the correct permissions (0644)
+//
+// If no valid domains remain, ApplyHosts removes our section entirely (there
+// is nothing to block), which keeps callers from writing an empty marker block.
 //
 // For each domain, we add TWO entries:
 //   - 0.0.0.0 domain.com       (version without www)
@@ -75,66 +79,57 @@ const (
 // DIFFERENT domains by the system. If we only blocked one, the user could get
 // in through the other.
 func ApplyHosts(domains []string) error {
-	// Step 1: Read the current contents of /etc/hosts.
-	// We need to preserve everything that already exists (system entries like
-	// "127.0.0.1 localhost") and only add/update our section.
+	valid := ValidDomains(domains)
+	if len(valid) == 0 {
+		// Nothing to block — make sure our section is gone rather than
+		// writing an empty marker block.
+		return RemoveHosts()
+	}
+
+	// Read the current contents of /etc/hosts. We need to preserve everything
+	// that already exists (system entries like "127.0.0.1 localhost") and only
+	// add/update our section.
 	content, err := os.ReadFile(hostsPath)
 	if err != nil {
 		return fmt.Errorf("failed to read file %s: %w", hostsPath, err)
 	}
 
-	// Step 2: Remove any previous Open Turkey section.
-	// This ensures we won't have duplicate entries if the user changes the
-	// list of blocked sites.
+	// Remove any previous Open Turkey section so we don't leave duplicates
+	// when the list of blocked sites changes.
 	cleanContent := removeOpenTurkeySection(string(content))
 
-	// Step 3: Build the new section with the blocked domains.
-	// Each domain gets two lines: one with and one without "www.".
+	// Build the new section with the blocked domains.
 	var section strings.Builder
 	section.WriteString(beginMarker + "\n")
 
-	for _, domain := range domains {
-		// Normalize entries like "https://example.com/" or "example.com/".
-		domain = NormalizeDomain(domain)
-		if domain == "" {
-			continue
-		}
-
-		// Always add the domain as given
+	for _, domain := range valid {
+		// Always add the domain as given.
 		section.WriteString(fmt.Sprintf("0.0.0.0 %s\n", domain))
 
-		// Now handle the version with/without "www.":
-		// If the domain ALREADY starts with "www.", also add it without "www."
-		// If it does NOT start with "www.", add the version with "www."
-		// This avoids doubling "www." (e.g. "www.www.facebook.com")
+		// Add the version with/without "www." so both forms are blocked,
+		// without doubling "www." (e.g. "www.www.facebook.com").
 		if strings.HasPrefix(domain, "www.") {
-			// The user passed "www.facebook.com", so we add "facebook.com"
 			withoutWWW := strings.TrimPrefix(domain, "www.")
 			section.WriteString(fmt.Sprintf("0.0.0.0 %s\n", withoutWWW))
 		} else {
-			// The user passed "facebook.com", so we add "www.facebook.com"
 			section.WriteString(fmt.Sprintf("0.0.0.0 www.%s\n", domain))
 		}
 	}
 
 	section.WriteString(endMarker + "\n")
 
-	// Step 4: Join the original content (without our old section) with the new section.
-	// We make sure there's a newline between the existing content and our
-	// section to keep the file organized and readable.
+	// Join the original content (without our old section) with the new one,
+	// keeping a newline between them.
 	finalContent := cleanContent
 	if !strings.HasSuffix(finalContent, "\n") && finalContent != "" {
 		finalContent += "\n"
 	}
 	finalContent += section.String()
 
-	// Step 5: Write the file back.
-	// Permission 0644 means:
-	//   - Owner (root): can read and write (6 = 4+2)
-	//   - Group: can only read (4)
-	//   - Others: can only read (4)
-	// This is the default /etc/hosts permission on most Linux distributions.
-	if err := os.WriteFile(hostsPath, []byte(finalContent), 0644); err != nil {
+	// Write atomically (temp file + rename) so a crash can never leave
+	// /etc/hosts truncated or half-written. Permission 0644 matches the
+	// distribution default.
+	if err := atomicWriteFile(hostsPath, []byte(finalContent), 0644); err != nil {
 		return fmt.Errorf("failed to write file %s: %w", hostsPath, err)
 	}
 
@@ -143,38 +138,60 @@ func ApplyHosts(domains []string) error {
 
 // RemoveHosts removes every Open Turkey block from the /etc/hosts file.
 //
-// This function is called when the block period ends or when the user
-// disables the blocker. It removes ONLY the lines between our markers,
-// preserving the rest of the file.
+// It is a no-op when our section isn't present, so the daemon can call it on
+// every idle tick without rewriting the file.
 func RemoveHosts() error {
-	// Step 1: Read the current contents.
 	content, err := os.ReadFile(hostsPath)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
 		return fmt.Errorf("failed to read file %s: %w", hostsPath, err)
 	}
 
-	// Step 2: Remove the Open Turkey section.
-	cleanContent := removeOpenTurkeySection(string(content))
+	text := string(content)
+	// Nothing of ours in the file — don't rewrite it.
+	if !strings.Contains(text, beginMarker) && !strings.Contains(text, endMarker) {
+		return nil
+	}
 
-	// Step 3: Write the file back without our section.
-	if err := os.WriteFile(hostsPath, []byte(cleanContent), 0644); err != nil {
+	cleanContent := removeOpenTurkeySection(text)
+
+	if err := atomicWriteFile(hostsPath, []byte(cleanContent), 0644); err != nil {
 		return fmt.Errorf("failed to write file %s: %w", hostsPath, err)
 	}
 
 	return nil
 }
 
-// IsHostsApplied checks whether ALL the domains in the list are blocked in /etc/hosts.
+// HostsSectionPresent reports whether our BEGIN/END markers exist in
+// /etc/hosts. The daemon uses it to decide whether an idle cleanup is needed.
+func HostsSectionPresent() bool {
+	content, err := os.ReadFile(hostsPath)
+	if err != nil {
+		return false
+	}
+	text := string(content)
+	return strings.Contains(text, beginMarker) || strings.Contains(text, endMarker)
+}
+
+// IsHostsApplied checks whether ALL the given domains are blocked in /etc/hosts.
 //
 // Returns true ONLY if:
 //  1. Open Turkey's BEGIN/END markers exist in the file
 //  2. EVERY expected domain is present in the section (both with and without "www.")
+//     with the exact "0.0.0.0 <domain>" mapping
 //
-// If ANY domain is missing, it returns false. This matters for detecting
-// whether someone manually edited /etc/hosts trying to get around the block.
+// If ANY domain is missing, or its address was changed (e.g. someone edited
+// "0.0.0.0 facebook.com" to point at a real IP), it returns false so the
+// daemon reapplies.
 func IsHostsApplied(domains []string) bool {
-	// Try to read the file. If it fails (e.g. no permission), we consider the
-	// block NOT applied, since we have no way to confirm it.
+	valid := ValidDomains(domains)
+	if len(valid) == 0 {
+		// No domains to enforce: "applied" means our section is absent.
+		return !HostsSectionPresent()
+	}
+
 	content, err := os.ReadFile(hostsPath)
 	if err != nil {
 		return false
@@ -182,44 +199,30 @@ func IsHostsApplied(domains []string) bool {
 
 	text := string(content)
 
-	// Check 1: Do the markers exist?
-	// If not, Open Turkey never wrote to this file or someone manually
-	// removed our section.
+	// The markers must exist.
 	if !strings.Contains(text, beginMarker) || !strings.Contains(text, endMarker) {
 		return false
 	}
 
-	// Check 2: Extract only the contents of our section.
-	// We need to check the domains INSIDE the section, not in the whole file,
-	// because the user may have their own entries for these domains outside
-	// our section (unlikely, but possible).
+	// Check the domains INSIDE our section only.
 	section := extractOpenTurkeySection(text)
 
-	// Check 3: Is every expected domain present?
-	for _, domain := range domains {
-		domain = NormalizeDomain(domain)
-		if domain == "" {
-			continue
-		}
-
-		// Check whether the line "0.0.0.0 domain" exists in the section.
-		// We use the full line to avoid false positives
-		// (e.g. "facebook.com.br" matching "facebook.com").
+	for _, domain := range valid {
+		// The exact "0.0.0.0 domain" line must be present. Using the full
+		// line avoids false positives (e.g. "facebook.com.br" matching
+		// "facebook.com") and catches an address that was tampered with.
 		mainEntry := fmt.Sprintf("0.0.0.0 %s", domain)
-		if !strings.Contains(section, mainEntry) {
+		if !containsLine(section, mainEntry) {
 			return false
 		}
 
-		// Also check the alternate version (with or without www.)
 		if strings.HasPrefix(domain, "www.") {
 			withoutWWW := strings.TrimPrefix(domain, "www.")
-			altEntry := fmt.Sprintf("0.0.0.0 %s", withoutWWW)
-			if !strings.Contains(section, altEntry) {
+			if !containsLine(section, fmt.Sprintf("0.0.0.0 %s", withoutWWW)) {
 				return false
 			}
 		} else {
-			wwwEntry := fmt.Sprintf("0.0.0.0 www.%s", domain)
-			if !strings.Contains(section, wwwEntry) {
+			if !containsLine(section, fmt.Sprintf("0.0.0.0 www.%s", domain)) {
 				return false
 			}
 		}
@@ -228,63 +231,51 @@ func IsHostsApplied(domains []string) bool {
 	return true
 }
 
+// containsLine reports whether text has a line equal to want (ignoring
+// surrounding whitespace). This is stricter than strings.Contains: it won't be
+// fooled by "0.0.0.0 facebook.com.evil.test" when looking for
+// "0.0.0.0 facebook.com".
+func containsLine(text, want string) bool {
+	for _, line := range strings.Split(text, "\n") {
+		if strings.TrimSpace(line) == want {
+			return true
+		}
+	}
+	return false
+}
+
 // removeOpenTurkeySection removes everything between the BEGIN and END markers (inclusive).
 //
 // This is a helper used both by ApplyHosts (to clean up before rewriting)
 // and by RemoveHosts (to remove the block).
-//
-// The algorithm walks the file line by line:
-//   - While OUTSIDE the markers, keep the line
-//   - On finding BEGIN, start skipping lines
-//   - On finding END, stop skipping (and skip the END line itself too)
-//   - Whatever is left is the system's original content, untouched
 func removeOpenTurkeySection(content string) string {
 	lines := strings.Split(content, "\n")
 	var result []string
 
-	// inSection works like an "on/off switch":
-	// false = we're outside the Open Turkey section (keep the line)
-	// true = we're inside the section (skip the line)
 	inSection := false
-
 	for _, line := range lines {
-		// Found the start of our section — from here on, skip everything
 		if strings.TrimSpace(line) == beginMarker {
 			inSection = true
 			continue
 		}
-
-		// Found the end of our section — go back to keeping lines
 		if strings.TrimSpace(line) == endMarker {
 			inSection = false
 			continue
 		}
-
-		// If we're outside the section, keep the line as is
 		if !inSection {
 			result = append(result, line)
 		}
 	}
 
-	// Join the lines back into a single text.
-	// Remove extra blank lines from the end to keep the file clean.
 	finalText := strings.Join(result, "\n")
 	finalText = strings.TrimRight(finalText, "\n")
-
-	// If the original file wasn't empty, make sure it ends with a newline
-	// (Unix convention — text files should end with a newline so tools like
-	// "cat" work correctly).
 	if finalText != "" {
 		finalText += "\n"
 	}
-
 	return finalText
 }
 
 // extractOpenTurkeySection returns only the contents between the markers.
-//
-// Used by IsHostsApplied to check which domains are blocked without getting
-// confused by entries outside our section.
 func extractOpenTurkeySection(content string) string {
 	lines := strings.Split(content, "\n")
 	var section []string
@@ -296,7 +287,7 @@ func extractOpenTurkeySection(content string) string {
 			continue
 		}
 		if strings.TrimSpace(line) == endMarker {
-			break // Found the end, no need to continue
+			break
 		}
 		if inSection {
 			section = append(section, line)

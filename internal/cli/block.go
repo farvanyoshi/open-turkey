@@ -6,9 +6,9 @@
 //
 // The commands here are the interface between the user and the database.
 // Each command follows the same pattern:
-//   1. Open the database (openDB)
-//   2. Call the matching function in the db package
-//   3. Print the result or the error message
+//  1. Open the database (openDB)
+//  2. Call the matching function in the db package
+//  3. Print the result or the error message
 //
 // Every subcommand lives under "open-turkey block":
 //   - open-turkey block create [name]
@@ -45,9 +45,11 @@ import (
 // If in the future we want to allow a custom path (via a flag), we just
 // replace this constant with a configurable variable.
 func openDB() (*db.DB, error) {
+	path := db.ResolveDBPath()
+
 	// filepath.Dir() extracts the parent directory from the full path.
 	// Example: "/var/lib/open-turkey/open-turkey.db" → "/var/lib/open-turkey"
-	dir := filepath.Dir(db.DefaultDBPath)
+	dir := filepath.Dir(path)
 
 	// os.MkdirAll creates the directory and every required parent.
 	// If the directory already exists, it does nothing (idempotent).
@@ -56,7 +58,40 @@ func openDB() (*db.DB, error) {
 		return nil, fmt.Errorf("failed to create database directory '%s': %w", dir, err)
 	}
 
-	return db.OpenDB(db.DefaultDBPath)
+	return db.OpenDB(path)
+}
+
+// ensureEditable refuses edits to a block that is active and locked.
+//
+// A locked block is meant to be immovable until it is unlocked (via the typing
+// challenge, or a time lock's expiry). Allowing its site/app lists to be edited
+// would be a trivial bypass: emptying a block deactivates it, and even trimming
+// entries weakens a lock the user set precisely so they couldn't weaken it on
+// impulse. So all four edit commands go through this guard.
+func ensureEditable(database *db.DB, name string) error {
+	locked, err := database.IsBlockLocked(name)
+	if err != nil {
+		return err
+	}
+	if locked {
+		return fmt.Errorf("block '%s' is locked and cannot be edited. Unlock it first with 'open-turkey unlock %s'", name, name)
+	}
+	return nil
+}
+
+// normalizeDomains normalizes each raw domain and rejects any that aren't valid
+// hostnames, returning a clear error naming the offending input. This is the
+// user-facing gate; the blocking layers validate again defensively.
+func normalizeDomains(raw []string) ([]string, error) {
+	out := make([]string, 0, len(raw))
+	for _, r := range raw {
+		host := blocker.NormalizeDomain(r)
+		if !blocker.IsValidDomain(host) {
+			return nil, fmt.Errorf("invalid domain %q (expected something like 'example.com')", r)
+		}
+		out = append(out, host)
+	}
+	return out, nil
 }
 
 // --------------------------------------------------------------------------
@@ -128,12 +163,14 @@ var blockAddSiteCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		// The first argument is the block name.
 		name := args[0]
-		// The remaining arguments are the domains to add.
-		// args[1:] creates a slice from the second element onward.
-		// We normalize each domain to guarantee a consistent format in the database.
-		domains := make([]string, len(args[1:]))
-		for i, d := range args[1:] {
-			domains[i] = blocker.NormalizeDomain(d)
+
+		// Normalize and validate each domain. Rejecting invalid input here
+		// (and again in the blocking layers) prevents crafted strings — e.g.
+		// one containing a newline — from being injected into /etc/hosts.
+		domains, err := normalizeDomains(args[1:])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
 		}
 
 		database, err := openDB()
@@ -142,6 +179,11 @@ var blockAddSiteCmd = &cobra.Command{
 			os.Exit(1)
 		}
 		defer database.Close()
+
+		if err := ensureEditable(database, name); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 
 		if err := database.AddSites(name, domains); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -178,9 +220,10 @@ var blockRemoveSiteCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		name := args[0]
 		// Normalize each domain to guarantee a match with what's in the database.
-		domains := make([]string, len(args[1:]))
-		for i, d := range args[1:] {
-			domains[i] = blocker.NormalizeDomain(d)
+		domains, err := normalizeDomains(args[1:])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
 		}
 
 		database, err := openDB()
@@ -189,6 +232,11 @@ var blockRemoveSiteCmd = &cobra.Command{
 			os.Exit(1)
 		}
 		defer database.Close()
+
+		if err := ensureEditable(database, name); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 
 		if err := database.RemoveSites(name, domains); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -252,6 +300,11 @@ var blockAddAppCmd = &cobra.Command{
 		}
 		defer database.Close()
 
+		if err := ensureEditable(database, name); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+
 		if err := database.AddApps(name, processNames); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
@@ -294,6 +347,11 @@ var blockRemoveAppCmd = &cobra.Command{
 			os.Exit(1)
 		}
 		defer database.Close()
+
+		if err := ensureEditable(database, name); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 
 		if err := database.RemoveApps(name, processNames); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -495,16 +553,17 @@ var blockRemoveCmd = &cobra.Command{
 // Registration order doesn't matter — Cobra organizes everything internally.
 //
 // Resulting hierarchy:
-//   open-turkey (rootCmd)
-//   └── block (blockCmd)
-//       ├── create   (blockCreateCmd)
-//       ├── add-site (blockAddSiteCmd)
-//       ├── remove-site (blockRemoveSiteCmd)
-//       ├── add-app  (blockAddAppCmd)
-//       ├── remove-app  (blockRemoveAppCmd)
-//       ├── list     (blockListCmd)
-//       ├── info     (blockInfoCmd)
-//       └── remove   (blockRemoveCmd)
+//
+//	open-turkey (rootCmd)
+//	└── block (blockCmd)
+//	    ├── create   (blockCreateCmd)
+//	    ├── add-site (blockAddSiteCmd)
+//	    ├── remove-site (blockRemoveSiteCmd)
+//	    ├── add-app  (blockAddAppCmd)
+//	    ├── remove-app  (blockRemoveAppCmd)
+//	    ├── list     (blockListCmd)
+//	    ├── info     (blockInfoCmd)
+//	    └── remove   (blockRemoveCmd)
 func init() {
 	// Add the "block" command as a child of the root command.
 	rootCmd.AddCommand(blockCmd)

@@ -2,10 +2,10 @@
 //
 // This file implements the commands that control a block's LIFECYCLE:
 //
-//   open-turkey start <block>   → Activates a block (starts blocking sites/apps)
-//   open-turkey stop <block>    → Deactivates a block (stops blocking)
-//   open-turkey unlock <block>  → Unlocks a locked block via the typing challenge
-//   open-turkey status          → Shows the status of every block
+//	open-turkey start <block>   → Activates a block (starts blocking sites/apps)
+//	open-turkey stop <block>    → Deactivates a block (stops blocking)
+//	open-turkey unlock <block>  → Unlocks a locked block via the typing challenge
+//	open-turkey status          → Shows the status of every block
 //
 // HOW DOES ACTIVATING A BLOCK WORK?
 // ---------------------------------
@@ -52,15 +52,17 @@ import (
 // Usage: open-turkey start <block-name> [--lock] [--lock-chars N]
 //
 // Examples:
-//   open-turkey start social-media              → activate without a lock
-//   open-turkey start social-media --lock       → activate with a lock (300 chars default)
-//   open-turkey start social-media --lock --lock-chars 500  → lock with 500 chars
+//
+//	open-turkey start social-media              → activate without a lock
+//	open-turkey start social-media --lock       → activate with a lock (300 chars default)
+//	open-turkey start social-media --lock --lock-chars 500  → lock with 500 chars
 //
 // Flags:
-//   --lock         Locks the block so it can't be deactivated with "stop".
-//                  The user will need to use "unlock" with the typing challenge.
-//   --lock-chars   Number of random characters in the unlock challenge.
-//                  Default: 300. The more, the harder to unlock.
+//
+//	--lock         Locks the block so it can't be deactivated with "stop".
+//	               The user will need to use "unlock" with the typing challenge.
+//	--lock-chars   Number of random characters in the unlock challenge.
+//	               Default: 300. The more, the harder to unlock.
 var startCmd = &cobra.Command{
 	Use:   "start [block]",
 	Short: "Activate a block",
@@ -81,6 +83,13 @@ var startCmd = &cobra.Command{
 		unlockChars, err := cmd.Flags().GetInt("lock-chars")
 		if err != nil {
 			return fmt.Errorf("failed to read --lock-chars flag: %w", err)
+		}
+
+		// A lock is only meaningful if its challenge is non-trivial. Reject a
+		// zero, negative or tiny value so "--lock --lock-chars 0" can't create
+		// a lock that's unlocked by pressing Enter.
+		if useLock && unlockChars < lock.MinLockChars {
+			return fmt.Errorf("--lock-chars must be at least %d (got %d)", lock.MinLockChars, unlockChars)
 		}
 
 		// --- Step 1: Open the database ---
@@ -357,16 +366,16 @@ var unlockCmd = &cobra.Command{
 //
 // Example output:
 //
-//   === Open Turkey Status ===
+//	=== Open Turkey Status ===
 //
-//   Active blocks:
-//     social-media [LOCKED - 300 chars]
-//     games
+//	Active blocks:
+//	  social-media [LOCKED - 300 chars]
+//	  games
 //
-//   Inactive blocks:
-//     work
+//	Inactive blocks:
+//	  work
 //
-//   Total: 3 blocks (2 active, 1 inactive)
+//	Total: 3 blocks (2 active, 1 inactive)
 //
 // This command is useful for a quick overview without having to inspect
 // each block individually.
@@ -547,10 +556,11 @@ func reapplyOrRemoveLayers(database *db.DB) error {
 // init() is called automatically by Go when the package is imported.
 // Here we register our commands as children of rootCmd (the root command),
 // making them available as subcommands:
-//   open-turkey start ...
-//   open-turkey stop ...
-//   open-turkey unlock ...
-//   open-turkey status
+//
+//	open-turkey start ...
+//	open-turkey stop ...
+//	open-turkey unlock ...
+//	open-turkey status
 //
 // We also configure startCmd's flags here, since Cobra requires flags to be
 // registered before the command runs.

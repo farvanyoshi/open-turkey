@@ -109,6 +109,13 @@ exec sudo $(INSTALL_PATH)/$(BINARY_INSTALLED) "$$@"\n' > $(INSTALL_PATH)/$(BINAR
 # -------------------------------------------------------
 .PHONY: uninstall
 uninstall:
+	@echo ">> Checking for locked blocks and cleaning blocking layers..."
+	# Refuse to uninstall while a locked block is active, and clean up all
+	# blocking layers (/etc/hosts, firewall, browser policies) so the system
+	# is not left blocked. This line has no leading "-", so a non-zero exit
+	# (a locked block) aborts the uninstall. Skipped if the binary is gone.
+	if [ -x $(INSTALL_PATH)/$(BINARY_INSTALLED) ]; then $(INSTALL_PATH)/$(BINARY_INSTALLED) prepare-uninstall; fi
+
 	@echo ">> Stopping the service..."
 	-systemctl stop open-turkey.service
 
