@@ -1,138 +1,138 @@
 # =============================================================================
 # Open Turkey - Makefile
-# Bloqueador de produtividade para Linux
+# Productivity blocker for Linux
 # =============================================================================
 
-# Nome do binario final (compilado pelo Go)
+# Name of the final binary (compiled by Go)
 BINARY_NAME=open-turkey
 
-# Nome do binario instalado no sistema
-# Renomeamos para "open-turkey-bin" para separar o binario real
-# do wrapper script que o usuario executa diretamente
+# Name of the binary installed on the system
+# We rename it to "open-turkey-bin" to separate the real binary
+# from the wrapper script the user runs directly
 BINARY_INSTALLED=open-turkey-bin
 
-# Caminho de instalacao do binario
+# Binary install path
 INSTALL_PATH=/usr/local/bin
 
-# Caminho do arquivo sudoers que permite executar sem senha
-# Usamos /etc/sudoers.d/ (diretorio de "drop-in") em vez de editar
-# /etc/sudoers diretamente — assim a regra e isolada e facil de remover
+# Path of the sudoers file that allows running without a password
+# We use /etc/sudoers.d/ (a "drop-in" directory) instead of editing
+# /etc/sudoers directly — that way the rule is isolated and easy to remove
 SUDOERS_FILE=/etc/sudoers.d/open-turkey
 
-# Caminho para instalar o arquivo de servico do systemd
+# Path to install the systemd service file
 SERVICE_PATH=/etc/systemd/system
 
-# Diretorio para armazenar o banco de dados SQLite
+# Directory to store the SQLite database
 DB_DIR=/var/lib/open-turkey
 
-# Inclui o Go instalado em /usr/local/go/bin no PATH
+# Include the Go installed at /usr/local/go/bin in PATH
 export PATH := /usr/local/go/bin:$(PATH)
 
 # -------------------------------------------------------
-# build: compila o binario
-# Usa CGO_ENABLED=0 pois utilizamos modernc.org/sqlite
-# (implementacao pura em Go, sem dependencia de CGo)
+# build: compiles the binary
+# Uses CGO_ENABLED=0 because we use modernc.org/sqlite
+# (a pure Go implementation, with no CGo dependency)
 # -------------------------------------------------------
 .PHONY: build
 build:
-	@echo ">> Compilando o $(BINARY_NAME)..."
+	@echo ">> Compiling $(BINARY_NAME)..."
 	CGO_ENABLED=0 go build -o $(BINARY_NAME) ./cmd/open-turkey
 
 # -------------------------------------------------------
-# install: compila, copia o binario, instala o servico
-#          do systemd, cria o diretorio do banco,
-#          configura sudoers e cria o wrapper script
+# install: compiles, copies the binary, installs the systemd
+#          service, creates the database directory,
+#          configures sudoers and creates the wrapper script
 #
-# Apos a instalacao, o usuario pode executar:
+# After installation, the user can run:
 #   open-turkey start ...
-# sem precisar digitar "sudo" nem senha.
+# without having to type "sudo" or a password.
 # -------------------------------------------------------
 .PHONY: install
 install: build
-	@echo ">> Instalando o binario real como $(BINARY_INSTALLED)..."
-	# O binario real fica com outro nome para que o wrapper
-	# script possa ocupar o nome "open-turkey"
-	# Copiamos para um arquivo temporário e fazemos um rename atômico.
-	# Isso evita erro "Área de texto ocupada" (ETXTBSY) quando o daemon
-	# está executando o binário atual.
+	@echo ">> Installing the real binary as $(BINARY_INSTALLED)..."
+	# The real binary gets a different name so that the wrapper
+	# script can take the "open-turkey" name
+	# We copy to a temporary file and do an atomic rename.
+	# This avoids the "Text file busy" (ETXTBSY) error when the daemon
+	# is running the current binary.
 	tmp="$(INSTALL_PATH)/.$(BINARY_INSTALLED).tmp.$$"; \
 	cp $(BINARY_NAME) "$$tmp"; \
 	chmod 755 "$$tmp"; \
 	mv -f "$$tmp" $(INSTALL_PATH)/$(BINARY_INSTALLED)
 
-	@echo ">> Criando wrapper script em $(INSTALL_PATH)/$(BINARY_NAME)..."
-	# O wrapper script e o que o usuario executa ao digitar "open-turkey".
-	# Ele chama "sudo open-turkey-bin" por baixo dos panos.
-	# "exec" substitui o processo do shell pelo sudo, evitando um
-	# processo intermediario desnecessario na arvore de processos.
-	# "$$@" repassa todos os argumentos do usuario (ex: start, block, etc.)
+	@echo ">> Creating wrapper script at $(INSTALL_PATH)/$(BINARY_NAME)..."
+	# The wrapper script is what the user runs when typing "open-turkey".
+	# It calls "sudo open-turkey-bin" under the hood.
+	# "exec" replaces the shell process with sudo, avoiding an
+	# unnecessary intermediate process in the process tree.
+	# "$$@" passes through all of the user's arguments (e.g. start, block, etc.)
 	printf '#!/bin/bash\n\
-# Wrapper script do Open Turkey\n\
-# Chama o binario real (open-turkey-bin) com sudo, de forma transparente.\n\
-# A regra em /etc/sudoers.d/open-turkey permite isso sem pedir senha.\n\
-# "exec" substitui este processo pelo sudo — nao fica shell sobrando.\n\
+# Open Turkey wrapper script\n\
+# Calls the real binary (open-turkey-bin) with sudo, transparently.\n\
+# The rule in /etc/sudoers.d/open-turkey allows this without a password.\n\
+# "exec" replaces this process with sudo — no leftover shell.\n\
 exec sudo $(INSTALL_PATH)/$(BINARY_INSTALLED) "$$@"\n' > $(INSTALL_PATH)/$(BINARY_NAME)
 	chmod 755 $(INSTALL_PATH)/$(BINARY_NAME)
 
-	@echo ">> Configurando sudoers para execucao sem senha..."
-	# Regra sudoers: permite que QUALQUER usuario execute open-turkey-bin
-	# como root, sem precisar digitar senha.
+	@echo ">> Configuring sudoers for passwordless execution..."
+	# sudoers rule: allows ANY user to run open-turkey-bin
+	# as root, without typing a password.
 	#   ALL ALL=(root) NOPASSWD: /usr/local/bin/open-turkey-bin
 	#    |   |    |       |
-	#    |   |    |       +-- nao pede senha
-	#    |   |    +---------- executa como root
-	#    |   +--------------- qualquer usuario
-	#    +------------------- em qualquer host
+	#    |   |    |       +-- doesn't ask for a password
+	#    |   |    +---------- runs as root
+	#    |   +--------------- any user
+	#    +------------------- on any host
 	#
-	# chmod 440: somente root e o grupo root podem ler o arquivo.
-	# Isso e obrigatorio — o sudo recusa arquivos com permissoes abertas.
+	# chmod 440: only root and the root group can read the file.
+	# This is mandatory — sudo refuses files with open permissions.
 	printf 'ALL ALL=(root) NOPASSWD: $(INSTALL_PATH)/$(BINARY_INSTALLED)\n' > $(SUDOERS_FILE)
 	chmod 440 $(SUDOERS_FILE)
 
-	@echo ">> Instalando o servico do systemd..."
+	@echo ">> Installing the systemd service..."
 	cp systemd/open-turkey.service $(SERVICE_PATH)/open-turkey.service
 	chmod 644 $(SERVICE_PATH)/open-turkey.service
 
-	@echo ">> Criando diretorio do banco de dados em $(DB_DIR)..."
+	@echo ">> Creating database directory at $(DB_DIR)..."
 	mkdir -p $(DB_DIR)
 
-	@echo ">> Habilitando e iniciando o servico..."
+	@echo ">> Enabling and starting the service..."
 	systemctl daemon-reload
 	systemctl enable open-turkey.service
 	systemctl start open-turkey.service
 
-	@echo ">> Instalacao concluida com sucesso!"
+	@echo ">> Installation completed successfully!"
 
 # -------------------------------------------------------
-# uninstall: para o servico, desabilita, remove o binario
-#            e o arquivo de servico do systemd
+# uninstall: stops the service, disables it, removes the binary
+#            and the systemd service file
 # -------------------------------------------------------
 .PHONY: uninstall
 uninstall:
-	@echo ">> Parando o servico..."
+	@echo ">> Stopping the service..."
 	-systemctl stop open-turkey.service
 
-	@echo ">> Desabilitando o servico..."
+	@echo ">> Disabling the service..."
 	-systemctl disable open-turkey.service
 
-	@echo ">> Removendo o arquivo de servico..."
+	@echo ">> Removing the service file..."
 	rm -f $(SERVICE_PATH)/open-turkey.service
 	systemctl daemon-reload
 
-	@echo ">> Removendo o wrapper script e o binario real..."
+	@echo ">> Removing the wrapper script and the real binary..."
 	rm -f $(INSTALL_PATH)/$(BINARY_NAME)
 	rm -f $(INSTALL_PATH)/$(BINARY_INSTALLED)
 
-	@echo ">> Removendo regra sudoers..."
+	@echo ">> Removing sudoers rule..."
 	rm -f $(SUDOERS_FILE)
 
-	@echo ">> Desinstalacao concluida com sucesso!"
+	@echo ">> Uninstallation completed successfully!"
 
 # -------------------------------------------------------
-# clean: remove artefatos de compilacao
+# clean: removes build artifacts
 # -------------------------------------------------------
 .PHONY: clean
 clean:
-	@echo ">> Limpando artefatos de compilacao..."
+	@echo ">> Cleaning build artifacts..."
 	rm -f $(BINARY_NAME)
-	@echo ">> Limpeza concluida!"
+	@echo ">> Cleanup complete!"

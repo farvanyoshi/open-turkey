@@ -1,68 +1,68 @@
 // =============================================================================
-// Pacote blocker — Modulo de encerramento de processos do Open Turkey
+// Package blocker — Open Turkey's process termination module
 // =============================================================================
 //
-// Este arquivo implementa o "matador de processos" — a parte do Open Turkey
-// que fecha programas bloqueados (como navegadores ou apps de distracoes).
-// Vamos entender como isso funciona no Linux:
+// This file implements the "process killer" — the part of Open Turkey that
+// closes blocked programs (like browsers or distracting apps).
+// Let's see how this works on Linux:
 //
-// O QUE E UM PROCESSO?
-// --------------------
-// Todo programa rodando no seu computador e um "processo". Quando voce abre
-// o Firefox, o Linux cria um processo pra ele. Cada processo recebe um numero
-// unico chamado PID (Process ID), que e como um RG — nenhum outro processo
-// ativo tem o mesmo numero.
+// WHAT IS A PROCESS?
+// ------------------
+// Every program running on your computer is a "process". When you open
+// Firefox, Linux creates a process for it. Each process gets a unique number
+// called a PID (Process ID), which is like an ID card — no other active
+// process has the same number.
 //
-// O QUE E O /proc?
-// -----------------
-// O Linux tem um sistema de arquivos virtual chamado /proc. Ele nao existe de
-// verdade no disco — o kernel (nucleo do sistema) gera essas informacoes em
-// tempo real. Cada processo ativo tem uma pasta /proc/[PID]/ com varias
-// informacoes sobre ele. E como se cada processo tivesse uma "ficha cadastral"
-// que o kernel mantem atualizada.
+// WHAT IS /proc?
+// --------------
+// Linux has a virtual file system called /proc. It doesn't really exist on
+// disk — the kernel (the core of the system) generates this information in
+// real time. Each active process has a /proc/[PID]/ folder with various
+// information about it. It's as if each process had a "record card" that the
+// kernel keeps up to date.
 //
-// Dois arquivos nos interessam:
+// Two files interest us:
 //
-//   /proc/[PID]/comm    → O nome curto do processo (maximo 15 caracteres).
-//                         Exemplo: "firefox", "chrome", "slack"
+//   /proc/[PID]/comm    → The process's short name (15 characters max).
+//                         Example: "firefox", "chrome", "slack"
 //
-//   /proc/[PID]/cmdline → A linha de comando completa usada pra iniciar o
-//                         processo. Exemplo: "/usr/bin/firefox --new-window".
-//                         Os argumentos sao separados por bytes nulos (\0),
-//                         nao por espacos — isso e uma particularidade do Linux.
+//   /proc/[PID]/cmdline → The full command line used to start the process.
+//                         Example: "/usr/bin/firefox --new-window".
+//                         Arguments are separated by null bytes (\0), not by
+//                         spaces — that's a Linux quirk.
 //
-// COMO "MATAMOS" UM PROCESSO?
-// ----------------------------
-// No Linux, processos se comunicam atraves de "sinais" (signals). Sao como
-// mensagens especiais que o kernel entrega. Existem varios tipos:
-//
-//   SIGTERM (sinal 15) → "Por favor, encerre educadamente." O processo pode
-//                         capturar esse sinal, salvar dados e sair com calma.
-//
-//   SIGKILL (sinal 9)  → "Morra AGORA." O processo NAO pode capturar, ignorar
-//                         ou bloquear esse sinal. O kernel mata ele na hora,
-//                         sem chance de fazer nada. E o "botao de emergencia".
-//
-// Nos usamos SIGKILL porque estamos lidando com programas que o usuario quer
-// BLOQUEADOS. Nao faz sentido pedir educadamente pro Firefox fechar — o
-// usuario pode ter uma aba aberta no site bloqueado e o navegador poderia
-// simplesmente ignorar o pedido.
-//
-// POR QUE PRECISAMOS DE ROOT?
+// HOW DO WE "KILL" A PROCESS?
 // ---------------------------
-// Um usuario normal so pode matar processos que pertencem a ele. Mas como o
-// Open Turkey roda como root (precisa disso pra editar /etc/hosts e o
-// iptables), ele tambem tem permissao pra matar qualquer processo no sistema.
+// On Linux, processes communicate through "signals". They're like special
+// messages that the kernel delivers. There are several types:
 //
-// CUIDADOS DE SEGURANCA:
-// ----------------------
-// - Nunca matamos o PID 1 (init/systemd) — ele e o "pai" de todos os
-//   processos. Mata-lo derrubaria o sistema inteiro.
-// - Nunca matamos nosso proprio processo — seria suicidio, o bloqueio pararia.
-// - Processos podem desaparecer a qualquer momento (o usuario fechou, ou o
-//   processo terminou sozinho). Isso causa "race conditions" — tentamos ler
-//   a ficha de um processo que ja nao existe mais. Simplesmente ignoramos
-//   esses erros e seguimos em frente.
+//   SIGTERM (signal 15) → "Please shut down politely." The process can catch
+//                         this signal, save data and exit calmly.
+//
+//   SIGKILL (signal 9)  → "Die NOW." The process can NOT catch, ignore or
+//                         block this signal. The kernel kills it on the spot,
+//                         with no chance to do anything. It's the "emergency
+//                         button".
+//
+// We use SIGKILL because we're dealing with programs the user wants BLOCKED.
+// It makes no sense to politely ask Firefox to close — the user might have a
+// tab open on the blocked site and the browser could simply ignore the request.
+//
+// WHY DO WE NEED ROOT?
+// --------------------
+// A normal user can only kill processes that belong to them. But since Open
+// Turkey runs as root (it needs that to edit /etc/hosts and iptables), it also
+// has permission to kill any process on the system.
+//
+// SAFETY PRECAUTIONS:
+// -------------------
+// - We never kill PID 1 (init/systemd) — it's the "parent" of all processes.
+//   Killing it would bring down the whole system.
+// - We never kill our own process — that would be suicide, the block would stop.
+// - Processes can disappear at any time (the user closed them, or the process
+//   ended on its own). This causes "race conditions" — we try to read the
+//   record of a process that no longer exists. We simply ignore those errors
+//   and move on.
 // =============================================================================
 package blocker
 
@@ -73,172 +73,171 @@ import (
 	"syscall"
 )
 
-// KillBlocked percorre todos os processos ativos no sistema e encerra (mata)
-// aqueles cujos nomes batem com a lista fornecida.
+// KillBlocked walks every active process on the system and terminates (kills)
+// those whose names match the given list.
 //
-// Parametros:
-//   - processNames: lista de nomes de programas a serem mortos.
-//     Exemplos: ["firefox", "chrome", "slack", "discord"]
+// Parameters:
+//   - processNames: list of program names to kill.
+//     Examples: ["firefox", "chrome", "slack", "discord"]
 //
-// Retorno:
-//   - int:   quantidade de processos que foram efetivamente mortos.
-//   - error: erro caso nao consiga ler o diretorio /proc (se isso falhar,
-//            algo esta muito errado no sistema).
+// Returns:
+//   - int:   number of processes that were actually killed.
+//   - error: error if the /proc directory can't be read (if that fails,
+//            something is very wrong with the system).
 //
-// Exemplo de uso:
+// Usage example:
 //
 //	killed, err := blocker.KillBlocked([]string{"firefox", "chrome"})
-//	fmt.Printf("Processos encerrados: %d\n", killed)
+//	fmt.Printf("Processes terminated: %d\n", killed)
 func KillBlocked(processNames []string) (int, error) {
-	// Se a lista de processos esta vazia, nao temos nada pra fazer.
-	// Retornamos 0 mortos e nenhum erro.
+	// If the process list is empty, there's nothing to do.
+	// Return 0 killed and no error.
 	if len(processNames) == 0 {
 		return 0, nil
 	}
 
-	// Lemos o conteudo do diretorio /proc. Cada entrada pode ser:
-	// - Um numero (ex: "1234") → e uma pasta de processo (PID)
-	// - Um nome (ex: "cpuinfo", "meminfo") → e um arquivo do sistema, ignoramos
+	// Read the contents of the /proc directory. Each entry can be:
+	// - A number (e.g. "1234") → it's a process folder (PID)
+	// - A name (e.g. "cpuinfo", "meminfo") → it's a system file, ignore it
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
-		// Se nao conseguimos ler /proc, algo esta muito errado.
-		// Pode ser que o sistema nao tenha /proc montado (muito raro no Linux).
+		// If we can't read /proc, something is very wrong.
+		// The system may not have /proc mounted (very rare on Linux).
 		return 0, err
 	}
 
-	// Pegamos nosso proprio PID pra nao nos matarmos acidentalmente.
-	// os.Getpid() retorna o PID do programa que esta rodando AGORA (o Open Turkey).
+	// Get our own PID so we don't accidentally kill ourselves.
+	// os.Getpid() returns the PID of the program running RIGHT NOW (Open Turkey).
 	selfPID := os.Getpid()
 
-	// Contador de quantos processos matamos com sucesso.
+	// Counter of how many processes we killed successfully.
 	killed := 0
 
-	// Percorremos cada entrada do /proc procurando por PIDs.
+	// Walk each /proc entry looking for PIDs.
 	for _, entry := range entries {
-		// Tentamos converter o nome da entrada pra numero.
-		// Se funcionar, e um PID. Se nao, e um arquivo do sistema e ignoramos.
-		// Exemplo: "1234" vira o numero 1234, mas "cpuinfo" daria erro.
+		// Try converting the entry name to a number.
+		// If it works, it's a PID. If not, it's a system file and we ignore it.
+		// Example: "1234" becomes the number 1234, but "cpuinfo" would fail.
 		pid, err := strconv.Atoi(entry.Name())
 		if err != nil {
-			// Nao e um numero → nao e um PID → pula pro proximo.
+			// Not a number → not a PID → skip to the next one.
 			continue
 		}
 
-		// SEGURANCA: Nunca matamos o PID 1 (init/systemd).
-		// O PID 1 e o primeiro processo que o kernel inicia. Ele e o "avo"
-		// de todos os outros processos. Mata-lo causaria um kernel panic
-		// ou desligaria o sistema.
+		// SAFETY: We never kill PID 1 (init/systemd).
+		// PID 1 is the first process the kernel starts. It's the "grandparent"
+		// of every other process. Killing it would cause a kernel panic or
+		// shut down the system.
 		if pid == 1 {
 			continue
 		}
 
-		// SEGURANCA: Nunca matamos nosso proprio processo.
-		// Se nos matassemos, o Open Turkey pararia de funcionar e todos os
-		// bloqueios que dependem de monitoramento continuo falhariam.
+		// SAFETY: We never kill our own process.
+		// If we killed ourselves, Open Turkey would stop working and every
+		// block that depends on continuous monitoring would fail.
 		if pid == selfPID {
 			continue
 		}
 
-		// Verificamos se este processo bate com algum nome da lista de bloqueio.
-		// Usamos duas estrategias de deteccao (explicadas abaixo).
+		// Check whether this process matches any name in the block list.
+		// We use two detection strategies (explained below).
 		if matchesBlockedProcess(pid, processNames) {
-			// Encontramos um processo bloqueado! Enviamos SIGKILL (sinal 9).
+			// Found a blocked process! Send SIGKILL (signal 9).
 			//
-			// syscall.Kill() pede ao kernel pra enviar um sinal a um processo.
-			// SIGKILL e o sinal mais agressivo — mata o processo instantaneamente
-			// e ele NAO pode interceptar ou ignorar esse sinal.
+			// syscall.Kill() asks the kernel to send a signal to a process.
+			// SIGKILL is the most aggressive signal — it kills the process
+			// instantly and it can NOT intercept or ignore that signal.
 			err := syscall.Kill(pid, syscall.SIGKILL)
 			if err != nil {
-				// Se deu erro ao matar, o processo provavelmente ja morreu sozinho
-				// entre a hora que lemos /proc e a hora que tentamos mata-lo.
-				// Isso e uma "race condition" — situacao normal em sistemas com
-				// muitos processos. Simplesmente ignoramos e continuamos.
+				// If killing failed, the process probably already died on its
+				// own between the time we read /proc and the time we tried to
+				// kill it. That's a "race condition" — a normal situation on
+				// systems with many processes. We simply ignore it and continue.
 				continue
 			}
-			// Processo morto com sucesso! Incrementamos o contador.
+			// Process killed successfully! Increment the counter.
 			killed++
 		}
 	}
 
-	// Retornamos quantos processos matamos. Nao retornamos erro aqui porque
-	// erros individuais de processos que desapareceram sao normais e ja foram
-	// tratados acima.
+	// Return how many processes we killed. We don't return an error here
+	// because individual errors from processes that disappeared are normal
+	// and were already handled above.
 	return killed, nil
 }
 
-// matchesBlockedProcess verifica se um processo (identificado pelo PID) tem
-// um nome que bate com algum dos nomes na lista de bloqueio.
+// matchesBlockedProcess checks whether a process (identified by PID) has a
+// name that matches any of the names in the block list.
 //
-// Usamos DUAS estrategias de deteccao pra maximizar a chance de pegar o
-// processo certo:
+// We use TWO detection strategies to maximize the chance of catching the
+// right process:
 //
-//  1. /proc/[pid]/comm — Nome curto do processo (rapido e simples).
-//     Funciona bem pra programas com nomes curtos como "firefox" ou "chrome".
-//     Limitacao: maximo de 15 caracteres. "firefox-esr" aparece como "firefox-esr",
-//     mas nomes muito longos seriam cortados.
+//  1. /proc/[pid]/comm — The process's short name (fast and simple).
+//     Works well for programs with short names like "firefox" or "chrome".
+//     Limitation: 15 characters max. "firefox-esr" shows up as "firefox-esr",
+//     but very long names would be truncated.
 //
-//  2. /proc/[pid]/cmdline — Linha de comando completa (mais detalhada).
-//     Contem o caminho completo e todos os argumentos. Util quando o nome no
-//     comm nao bate, mas o executavel completo sim.
-//     Exemplo: comm pode ser "python3", mas cmdline revela
+//  2. /proc/[pid]/cmdline — The full command line (more detailed).
+//     Contains the full path and every argument. Useful when the comm name
+//     doesn't match, but the full executable does.
+//     Example: comm may be "python3", but cmdline reveals
 //     "/usr/bin/python3 /opt/slack/slack".
 func matchesBlockedProcess(pid int, processNames []string) bool {
-	// Montamos o caminho base pra esse PID: "/proc/1234"
+	// Build the base path for this PID: "/proc/1234"
 	pidPath := "/proc/" + strconv.Itoa(pid)
 
-	// --- ESTRATEGIA 1: Checar /proc/[pid]/comm ---
+	// --- STRATEGY 1: Check /proc/[pid]/comm ---
 	//
-	// O arquivo comm contem apenas o nome do executavel, sem caminho e sem
-	// argumentos. E o jeito mais rapido de identificar um processo.
-	// Exemplo de conteudo: "firefox\n" (vem com uma quebra de linha no final)
+	// The comm file contains only the executable's name, with no path and no
+	// arguments. It's the fastest way to identify a process.
+	// Example content: "firefox\n" (it comes with a trailing newline)
 	commBytes, err := os.ReadFile(pidPath + "/comm")
 	if err == nil {
-		// strings.TrimSpace remove espacos e quebras de linha do inicio e fim.
-		// "firefox\n" vira "firefox".
+		// strings.TrimSpace removes spaces and newlines from the start and end.
+		// "firefox\n" becomes "firefox".
 		comm := strings.TrimSpace(string(commBytes))
 
-		// Comparamos com cada nome da lista usando EqualFold, que ignora
-		// maiusculas/minusculas. Assim "Firefox", "FIREFOX" e "firefox"
-		// sao todos reconhecidos.
+		// Compare with each name in the list using EqualFold, which ignores
+		// case. So "Firefox", "FIREFOX" and "firefox" are all recognized.
 		for _, name := range processNames {
 			if strings.EqualFold(comm, name) {
 				return true
 			}
 		}
 	}
-	// Se deu erro ao ler comm, o processo pode ter desaparecido.
-	// Nao e problema — tentamos a proxima estrategia.
+	// If reading comm failed, the process may have disappeared.
+	// Not a problem — we try the next strategy.
 
-	// --- ESTRATEGIA 2: Checar /proc/[pid]/cmdline ---
+	// --- STRATEGY 2: Check /proc/[pid]/cmdline ---
 	//
-	// O arquivo cmdline contem a linha de comando completa usada pra iniciar
-	// o processo. Os argumentos sao separados por bytes nulos (\0), nao por
-	// espacos. Isso e uma convencao do kernel Linux.
+	// The cmdline file contains the full command line used to start the
+	// process. Arguments are separated by null bytes (\0), not by spaces.
+	// That's a Linux kernel convention.
 	//
-	// Exemplo (representando \0 como |):
+	// Example (representing \0 as |):
 	//   /usr/bin/firefox|--new-window|https://google.com
 	//
-	// Cada pedaco entre os \0 e um "argumento" do comando.
+	// Each piece between the \0 bytes is an "argument" of the command.
 	cmdlineBytes, err := os.ReadFile(pidPath + "/cmdline")
 	if err != nil {
-		// Se nao conseguimos ler o cmdline, o processo desapareceu.
-		// Nao podemos confirmar nem negar — retornamos false (nao e match).
+		// If we can't read cmdline, the process disappeared.
+		// We can neither confirm nor deny — return false (no match).
 		return false
 	}
 
-	// Convertemos os bytes pra string e separamos pelos bytes nulos (\0).
-	// Resultado: ["usr/bin/firefox", "--new-window", "https://google.com"]
+	// Convert the bytes to a string and split on the null bytes (\0).
+	// Result: ["usr/bin/firefox", "--new-window", "https://google.com"]
 	cmdline := string(cmdlineBytes)
 	args := strings.Split(cmdline, "\x00")
 
-	// Verificamos cada argumento da linha de comando contra cada nome da lista.
-	// Usamos Contains (contem) ao inves de EqualFold (igual) porque o caminho
-	// completo pode ser "/usr/bin/firefox" e queremos encontrar "firefox" dentro dele.
+	// Check each command-line argument against each name in the list.
+	// We use Contains instead of EqualFold (equals) because the full path may
+	// be "/usr/bin/firefox" and we want to find "firefox" inside it.
 	//
-	// Convertemos tudo pra minusculo pra a comparacao ser case-insensitive.
+	// We convert everything to lowercase so the comparison is case-insensitive.
 	for _, arg := range args {
-		// Argumentos vazios podem aparecer (especialmente o ultimo, apos o \0 final).
-		// Pulamos eles pra evitar falsos positivos.
+		// Empty arguments may appear (especially the last one, after the
+		// trailing \0). We skip them to avoid false positives.
 		if arg == "" {
 			continue
 		}
@@ -250,6 +249,6 @@ func matchesBlockedProcess(pid int, processNames []string) bool {
 		}
 	}
 
-	// Nenhuma estrategia encontrou match — esse processo nao esta na lista.
+	// Neither strategy found a match — this process isn't on the list.
 	return false
 }

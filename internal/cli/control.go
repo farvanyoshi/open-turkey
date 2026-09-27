@@ -1,36 +1,36 @@
-// control.go — Comandos de controle de blocos: start, stop, unlock, status.
+// control.go — Block control commands: start, stop, unlock, status.
 //
-// Este arquivo implementa os comandos que controlam o CICLO DE VIDA de um bloco:
+// This file implements the commands that control a block's LIFECYCLE:
 //
-//   open-turkey start <bloco>   → Ativa um bloco (começa a bloquear sites/apps)
-//   open-turkey stop <bloco>    → Desativa um bloco (para de bloquear)
-//   open-turkey unlock <bloco>  → Desbloqueia um bloco travado via desafio de digitação
-//   open-turkey status          → Mostra o status de todos os blocos
+//   open-turkey start <block>   → Activates a block (starts blocking sites/apps)
+//   open-turkey stop <block>    → Deactivates a block (stops blocking)
+//   open-turkey unlock <block>  → Unlocks a locked block via the typing challenge
+//   open-turkey status          → Shows the status of every block
 //
-// COMO FUNCIONA A ATIVAÇÃO DE UM BLOCO?
-// -------------------------------------
-// Quando o usuário executa "open-turkey start redes-sociais", o sistema:
-//  1. Marca o bloco como ativo no banco de dados
-//  2. Coleta TODOS os domínios de TODOS os blocos ativos (não só o novo)
-//  3. Aplica as 4 camadas de bloqueio:
-//     - /etc/hosts (bloqueia DNS local)
-//     - Firewall iptables (bloqueia conexões de rede)
-//     - Políticas de navegador (bloqueia no Firefox/Chrome/Chromium)
-//     - Mata processos bloqueados (fecha apps como Discord, Slack, etc.)
+// HOW DOES ACTIVATING A BLOCK WORK?
+// ---------------------------------
+// When the user runs "open-turkey start social-media", the system:
+//  1. Marks the block as active in the database
+//  2. Collects ALL domains from ALL active blocks (not just the new one)
+//  3. Applies the 4 blocking layers:
+//     - /etc/hosts (blocks local DNS)
+//     - iptables firewall (blocks network connections)
+//     - Browser policies (blocks in Firefox/Chrome/Chromium)
+//     - Kills blocked processes (closes apps like Discord, Slack, etc.)
 //
-// Por que reaplicar TODAS as camadas e não só a do bloco novo?
-// Porque as camadas são "globais" — o /etc/hosts, por exemplo, tem UMA seção
-// do Open Turkey com TODOS os domínios bloqueados. Não dá pra adicionar
-// domínios incrementalmente sem risco de inconsistência. É mais seguro
-// recriar tudo do zero a cada mudança.
+// Why reapply ALL layers and not just the new block's?
+// Because the layers are "global" — /etc/hosts, for example, has ONE Open
+// Turkey section with ALL blocked domains. You can't add domains
+// incrementally without risking inconsistency. It's safer to rebuild
+// everything from scratch on every change.
 //
-// O QUE É O "LOCK" (TRAVA)?
-// --------------------------
-// Quando o usuário ativa um bloco com --lock, ele está dizendo: "eu sei que
-// vou tentar me sabotar, então torna difícil desativar esse bloqueio".
-// O bloco travado só pode ser desativado via o comando "unlock", que exige
-// digitar uma string aleatória enorme (o "desafio de digitação"). Isso cria
-// atrito suficiente para que o impulso de "preciso ver o Instagram" passe.
+// WHAT IS THE "LOCK"?
+// -------------------
+// When the user activates a block with --lock, they're saying: "I know I'm
+// going to try to sabotage myself, so make it hard to disable this block".
+// A locked block can only be deactivated via the "unlock" command, which
+// requires typing a huge random string (the "typing challenge"). This creates
+// enough friction for the "I need to check Instagram" impulse to pass.
 package cli
 
 import (
@@ -44,137 +44,139 @@ import (
 )
 
 // ============================================================================
-// startCmd — Ativar um bloco de bloqueio
+// startCmd — Activate a block
 // ============================================================================
 
-// startCmd ativa um bloco cadastrado no banco de dados.
+// startCmd activates a block registered in the database.
 //
-// Uso: open-turkey start <nome-do-bloco> [--lock] [--lock-chars N]
+// Usage: open-turkey start <block-name> [--lock] [--lock-chars N]
 //
-// Exemplos:
-//   open-turkey start redes-sociais              → ativa sem trava
-//   open-turkey start redes-sociais --lock       → ativa com trava (300 chars padrão)
-//   open-turkey start redes-sociais --lock --lock-chars 500  → trava com 500 chars
+// Examples:
+//   open-turkey start social-media              → activate without a lock
+//   open-turkey start social-media --lock       → activate with a lock (300 chars default)
+//   open-turkey start social-media --lock --lock-chars 500  → lock with 500 chars
 //
 // Flags:
-//   --lock         Trava o bloco para que não possa ser desativado com "stop".
-//                  O usuário precisará usar "unlock" com desafio de digitação.
-//   --lock-chars   Quantidade de caracteres aleatórios do desafio de desbloqueio.
-//                  Padrão: 300. Quanto mais, mais difícil de desbloquear.
+//   --lock         Locks the block so it can't be deactivated with "stop".
+//                  The user will need to use "unlock" with the typing challenge.
+//   --lock-chars   Number of random characters in the unlock challenge.
+//                  Default: 300. The more, the harder to unlock.
 var startCmd = &cobra.Command{
-	Use:   "start [bloco]",
-	Short: "Ativar um bloco de bloqueio",
+	Use:   "start [block]",
+	Short: "Activate a block",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// Extraímos o nome do bloco do primeiro argumento.
-		// O Cobra já garantiu que temos exatamente 1 argumento (ExactArgs(1)).
-		nomeBLoco := args[0]
+		// Extract the block name from the first argument.
+		// Cobra already guaranteed we have exactly 1 argument (ExactArgs(1)).
+		blockName := args[0]
 
-		// Lemos as flags --lock e --lock-chars.
-		// cmd.Flags().GetBool/GetInt retornam o valor da flag e um possível erro
-		// de parsing (improvável, pois o Cobra valida os tipos automaticamente).
-		usarTrava, err := cmd.Flags().GetBool("lock")
+		// Read the --lock and --lock-chars flags.
+		// cmd.Flags().GetBool/GetInt return the flag value and a possible
+		// parsing error (unlikely, since Cobra validates types automatically).
+		useLock, err := cmd.Flags().GetBool("lock")
 		if err != nil {
-			return fmt.Errorf("erro ao ler flag --lock: %w", err)
+			return fmt.Errorf("failed to read --lock flag: %w", err)
 		}
 
-		charsDesbloqueio, err := cmd.Flags().GetInt("lock-chars")
+		unlockChars, err := cmd.Flags().GetInt("lock-chars")
 		if err != nil {
-			return fmt.Errorf("erro ao ler flag --lock-chars: %w", err)
+			return fmt.Errorf("failed to read --lock-chars flag: %w", err)
 		}
 
-		// --- Passo 1: Abrir o banco de dados ---
-		// openDB() é uma função auxiliar definida em block.go que abre o banco
-		// SQLite no caminho padrão (/var/lib/open-turkey/open-turkey.db).
+		// --- Step 1: Open the database ---
+		// openDB() is a helper defined in block.go that opens the SQLite
+		// database at the default path (/var/lib/open-turkey/open-turkey.db).
 		database, err := openDB()
 		if err != nil {
 			return err
 		}
-		// defer garante que o banco será fechado quando a função terminar,
-		// mesmo se um erro ocorrer no meio do caminho. É o equivalente ao
-		// "finally" de outras linguagens.
+		// defer ensures the database is closed when the function ends, even
+		// if an error occurs along the way. It's the equivalent of "finally"
+		// in other languages.
 		defer database.Close()
 
-		// --- Passo 2: Verificar se o bloco existe e tem sites/apps ---
-		// Precisamos confirmar que o bloco existe antes de tentar ativá-lo.
-		// Também verificamos se ele tem pelo menos um site ou app configurado,
-		// pois ativar um bloco vazio não faz sentido.
-		detalhe, err := database.GetBlock(nomeBLoco)
+		// --- Step 2: Check that the block exists and has sites/apps ---
+		// We need to confirm the block exists before trying to activate it.
+		// We also check that it has at least one site or app configured,
+		// since activating an empty block makes no sense.
+		detail, err := database.GetBlock(blockName)
 		if err != nil {
 			return err
 		}
 
-		if len(detalhe.Sites) == 0 && len(detalhe.Apps) == 0 {
-			return fmt.Errorf("bloco '%s' não tem sites nem apps configurados. Adicione com 'open-turkey block add-site' ou 'open-turkey block add-app'", nomeBLoco)
+		if len(detail.Sites) == 0 && len(detail.Apps) == 0 {
+			return fmt.Errorf("block '%s' has no sites or apps configured. Add some with 'open-turkey block add-site' or 'open-turkey block add-app'", blockName)
 		}
 
-		// --- Passo 3: Verificar se já está ativo ---
-		// Se o bloco já está ativo, não faz sentido ativar de novo.
-		// Informamos o usuário para evitar confusão.
-		if detalhe.Active {
-			return fmt.Errorf("bloco '%s' já está ativo", nomeBLoco)
+		// --- Step 3: Check whether it's already active ---
+		// If the block is already active, activating it again makes no sense.
+		// We tell the user to avoid confusion.
+		if detail.Active {
+			return fmt.Errorf("block '%s' is already active", blockName)
 		}
 
-		// --- Passo 4: Ativar o bloco no banco de dados ---
-		// Se --lock não foi passado, lockChars fica como 0 (sem trava).
-		// Se --lock foi passado, usamos o valor de --lock-chars (padrão 300).
+		// --- Step 4: Activate the block in the database ---
+		// If --lock wasn't passed, lockChars stays 0 (no lock).
+		// If --lock was passed, we use the --lock-chars value (default 300).
 		lockChars := 0
-		if usarTrava {
-			lockChars = charsDesbloqueio
+		if useLock {
+			lockChars = unlockChars
 		}
 
-		if err := database.ActivateBlock(nomeBLoco, usarTrava, lockChars); err != nil {
+		if err := database.ActivateBlock(blockName, useLock, lockChars); err != nil {
 			return err
 		}
 
-		// --- Passo 5: Coletar TODOS os domínios e apps de TODOS os blocos ativos ---
-		// Precisamos de todos os domínios porque as camadas de bloqueio são globais.
-		// Se o bloco "redes-sociais" bloqueia facebook.com e o bloco "jogos" bloqueia
-		// steam.com, precisamos aplicar AMBOS no /etc/hosts, firewall, etc.
-		dominios, err := database.GetAllBlockedDomains()
+		// --- Step 5: Collect ALL domains and apps from ALL active blocks ---
+		// We need every domain because the blocking layers are global.
+		// If the "social-media" block blocks facebook.com and the "games"
+		// block blocks steam.com, we need to apply BOTH in /etc/hosts,
+		// the firewall, etc.
+		domains, err := database.GetAllBlockedDomains()
 		if err != nil {
-			return fmt.Errorf("erro ao buscar domínios bloqueados: %w", err)
+			return fmt.Errorf("failed to fetch blocked domains: %w", err)
 		}
 
 		apps, err := database.GetAllBlockedApps()
 		if err != nil {
-			return fmt.Errorf("erro ao buscar apps bloqueados: %w", err)
+			return fmt.Errorf("failed to fetch blocked apps: %w", err)
 		}
 
-		// --- Passo 6: Aplicar as 4 camadas de bloqueio ---
-		// Cada camada é um mecanismo diferente de bloqueio que funciona
-		// independentemente dos outros. Juntas, tornam muito difícil burlar.
+		// --- Step 6: Apply the 4 blocking layers ---
+		// Each layer is a different blocking mechanism that works
+		// independently of the others. Together, they make it very hard to
+		// get around.
 
-		// Camada 1: /etc/hosts — redireciona domínios para 0.0.0.0 (IP inválido).
-		// É a primeira linha de defesa e afeta TODOS os programas do sistema.
-		if err := blocker.ApplyHosts(dominios); err != nil {
-			return fmt.Errorf("erro ao aplicar bloqueio no /etc/hosts: %w", err)
+		// Layer 1: /etc/hosts — redirects domains to 0.0.0.0 (invalid IP).
+		// It's the first line of defense and affects EVERY program on the system.
+		if err := blocker.ApplyHosts(domains); err != nil {
+			return fmt.Errorf("failed to apply /etc/hosts block: %w", err)
 		}
 
-		// Camada 2: iptables (firewall) — bloqueia pacotes de rede para os IPs dos sites.
-		// Funciona mesmo se o usuário encontrar o IP real e tentar acessar diretamente.
-		if err := blocker.ApplyFirewall(dominios); err != nil {
-			return fmt.Errorf("erro ao aplicar bloqueio no firewall: %w", err)
+		// Layer 2: iptables (firewall) — blocks network packets to the sites' IPs.
+		// Works even if the user finds the real IP and tries to access it directly.
+		if err := blocker.ApplyFirewall(domains); err != nil {
+			return fmt.Errorf("failed to apply firewall block: %w", err)
 		}
 
-		// Camada 3: Políticas de navegador — bloqueia diretamente no Firefox/Chrome/Chromium.
-		// O navegador mostra uma página "Bloqueado pela política da organização".
-		if err := blocker.ApplyBrowserPolicies(dominios); err != nil {
-			return fmt.Errorf("erro ao aplicar políticas de navegador: %w", err)
+		// Layer 3: Browser policies — blocks directly in Firefox/Chrome/Chromium.
+		// The browser shows a "Blocked by your organization's policy" page.
+		if err := blocker.ApplyBrowserPolicies(domains); err != nil {
+			return fmt.Errorf("failed to apply browser policies: %w", err)
 		}
 
-		// Camada 4: Matar processos — encerra apps bloqueados que estejam rodando.
-		// Usa SIGKILL (sinal 9) para garantir que o processo morra imediatamente.
+		// Layer 4: Kill processes — terminates blocked apps that are running.
+		// Uses SIGKILL (signal 9) to make sure the process dies immediately.
 		if len(apps) > 0 {
 			blocker.KillBlocked(apps)
 		}
 
-		// --- Passo 7: Mensagem de sucesso ---
-		// Informamos se o bloco foi ativado com ou sem trava.
-		if usarTrava {
-			fmt.Printf("Bloco '%s' ativado com sucesso [TRAVADO - %d chars para desbloquear]\n", nomeBLoco, lockChars)
+		// --- Step 7: Success message ---
+		// Tell the user whether the block was activated with or without a lock.
+		if useLock {
+			fmt.Printf("Block '%s' activated successfully [LOCKED - %d chars to unlock]\n", blockName, lockChars)
 		} else {
-			fmt.Printf("Bloco '%s' ativado com sucesso\n", nomeBLoco)
+			fmt.Printf("Block '%s' activated successfully\n", blockName)
 		}
 
 		return nil
@@ -182,354 +184,356 @@ var startCmd = &cobra.Command{
 }
 
 // ============================================================================
-// stopCmd — Desativar um bloco de bloqueio
+// stopCmd — Deactivate a block
 // ============================================================================
 
-// stopCmd desativa um bloco que está ativo.
+// stopCmd deactivates a block that is active.
 //
-// Uso: open-turkey stop <nome-do-bloco>
+// Usage: open-turkey stop <block-name>
 //
-// IMPORTANTE: Se o bloco estiver travado (--lock), o "stop" será recusado.
-// O usuário precisará usar "open-turkey unlock <bloco>" para desbloquear
-// primeiro. Isso é intencional — a trava existe para impedir desativação impulsiva.
+// IMPORTANT: If the block is locked (--lock), "stop" is refused.
+// The user must use "open-turkey unlock <block>" to unlock it first. This is
+// intentional — the lock exists to prevent impulsive deactivation.
 //
-// Após desativar, o sistema reaplicar as camadas com os domínios restantes
-// (de outros blocos ativos). Se nenhum bloco permanecer ativo, TODAS as
-// camadas de bloqueio são removidas completamente.
+// After deactivating, the system reapplies the layers with the remaining
+// domains (from other active blocks). If no block remains active, ALL
+// blocking layers are removed completely.
 var stopCmd = &cobra.Command{
-	Use:   "stop [bloco]",
-	Short: "Desativar um bloco de bloqueio",
+	Use:   "stop [block]",
+	Short: "Deactivate a block",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		nomeBLoco := args[0]
+		blockName := args[0]
 
-		// --- Passo 1: Abrir o banco de dados ---
+		// --- Step 1: Open the database ---
 		database, err := openDB()
 		if err != nil {
 			return err
 		}
 		defer database.Close()
 
-		// --- Passo 2: Verificar se o bloco está ativo ---
-		// Não faz sentido desativar algo que não está ativo.
-		ativo, err := database.IsBlockActive(nomeBLoco)
+		// --- Step 2: Check that the block is active ---
+		// Deactivating something that isn't active makes no sense.
+		active, err := database.IsBlockActive(blockName)
 		if err != nil {
 			return err
 		}
-		if !ativo {
-			return fmt.Errorf("bloco '%s' não está ativo", nomeBLoco)
+		if !active {
+			return fmt.Errorf("block '%s' is not active", blockName)
 		}
 
-		// --- Passo 3: Verificar se o bloco está travado ---
-		// Se está travado, o usuário NÃO pode usar "stop". Precisa usar "unlock"
-		// que exige digitar uma string aleatória enorme (desafio de digitação).
-		// Isso é o mecanismo de "atrito" que impede desativação por impulso.
-		travado, err := database.IsBlockLocked(nomeBLoco)
+		// --- Step 3: Check whether the block is locked ---
+		// If it's locked, the user can NOT use "stop". They must use "unlock",
+		// which requires typing a huge random string (the typing challenge).
+		// This is the "friction" mechanism that prevents impulsive deactivation.
+		locked, err := database.IsBlockLocked(blockName)
 		if err != nil {
 			return err
 		}
-		if travado {
-			return fmt.Errorf("bloco '%s' está travado. Use 'open-turkey unlock' primeiro", nomeBLoco)
+		if locked {
+			return fmt.Errorf("block '%s' is locked. Use 'open-turkey unlock' first", blockName)
 		}
 
-		// --- Passo 4: Desativar o bloco no banco de dados ---
-		if err := database.DeactivateBlock(nomeBLoco); err != nil {
+		// --- Step 4: Deactivate the block in the database ---
+		if err := database.DeactivateBlock(blockName); err != nil {
 			return err
 		}
 
-		// --- Passo 5: Reaplicar ou remover as camadas de bloqueio ---
-		// Após desativar um bloco, precisamos atualizar as camadas de bloqueio.
-		// Existem dois cenários possíveis:
+		// --- Step 5: Reapply or remove the blocking layers ---
+		// After deactivating a block, we need to update the blocking layers.
+		// There are two possible scenarios:
 		//
-		// Cenário A: Ainda há outros blocos ativos.
-		//   → Reaplicamos TODAS as camadas com os domínios/apps restantes.
+		// Scenario A: Other blocks are still active.
+		//   → Reapply ALL layers with the remaining domains/apps.
 		//
-		// Cenário B: Não há mais nenhum bloco ativo.
-		//   → Removemos TODAS as camadas de bloqueio completamente.
-		if err := reaplicarOuRemoverCamadas(database); err != nil {
+		// Scenario B: No block is active anymore.
+		//   → Remove ALL blocking layers completely.
+		if err := reapplyOrRemoveLayers(database); err != nil {
 			return err
 		}
 
-		fmt.Printf("Bloco '%s' desativado com sucesso\n", nomeBLoco)
+		fmt.Printf("Block '%s' deactivated successfully\n", blockName)
 		return nil
 	},
 }
 
 // ============================================================================
-// unlockCmd — Desbloquear um bloco travado via desafio de digitação
+// unlockCmd — Unlock a locked block via the typing challenge
 // ============================================================================
 
-// unlockCmd permite desativar um bloco que foi ativado com --lock.
+// unlockCmd allows deactivating a block that was activated with --lock.
 //
-// Uso: open-turkey unlock <nome-do-bloco>
+// Usage: open-turkey unlock <block-name>
 //
-// O fluxo é:
-//  1. Verificar se o bloco está ativo e travado
-//  2. Gerar uma string aleatória com N caracteres (definido na ativação)
-//  3. O usuário precisa digitar a string EXATAMENTE igual
-//  4. Se acertar: o bloco é desativado
-//  5. Se errar: o bloqueio permanece
+// The flow is:
+//  1. Check that the block is active and locked
+//  2. Generate a random string of N characters (set at activation)
+//  3. The user must type the string EXACTLY
+//  4. If they get it right: the block is deactivated
+//  5. If they get it wrong: the block stays in place
 //
-// Este comando é a ÚNICA forma de desativar um bloco travado. Foi projetado
-// para ser chato e demorado de propósito — o objetivo é que o impulso de
-// desbloquear passe antes do usuário terminar de digitar.
+// This command is the ONLY way to deactivate a locked block. It was designed
+// to be tedious and slow on purpose — the goal is for the urge to unlock to
+// pass before the user finishes typing.
 var unlockCmd = &cobra.Command{
-	Use:   "unlock [bloco]",
-	Short: "Desbloquear um bloco travado via desafio de digitação",
+	Use:   "unlock [block]",
+	Short: "Unlock a locked block via the typing challenge",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		nomeBLoco := args[0]
+		blockName := args[0]
 
-		// --- Passo 1: Abrir o banco de dados ---
+		// --- Step 1: Open the database ---
 		database, err := openDB()
 		if err != nil {
 			return err
 		}
 		defer database.Close()
 
-		// --- Passo 2: Verificar se o bloco está ativo ---
-		// Não faz sentido desbloquear algo que não está ativo.
-		ativo, err := database.IsBlockActive(nomeBLoco)
+		// --- Step 2: Check that the block is active ---
+		// Unlocking something that isn't active makes no sense.
+		active, err := database.IsBlockActive(blockName)
 		if err != nil {
 			return err
 		}
-		if !ativo {
-			return fmt.Errorf("bloco '%s' não está ativo", nomeBLoco)
+		if !active {
+			return fmt.Errorf("block '%s' is not active", blockName)
 		}
 
-		// --- Passo 3: Verificar se o bloco está realmente travado ---
-		// Se não está travado, o usuário pode simplesmente usar "stop".
-		travado, err := database.IsBlockLocked(nomeBLoco)
+		// --- Step 3: Check that the block is actually locked ---
+		// If it's not locked, the user can simply use "stop".
+		locked, err := database.IsBlockLocked(blockName)
 		if err != nil {
 			return err
 		}
-		if !travado {
-			return fmt.Errorf("bloco '%s' não está travado. Use 'open-turkey stop' para desativar", nomeBLoco)
+		if !locked {
+			return fmt.Errorf("block '%s' is not locked. Use 'open-turkey stop' to deactivate it", blockName)
 		}
 
-		// --- Passo 4: Obter o número de caracteres do desafio ---
-		// O valor de lock_chars foi definido quando o bloco foi ativado com --lock.
-		// É armazenado no banco para que saibamos quantos caracteres gerar.
-		detalhe, err := database.GetBlock(nomeBLoco)
+		// --- Step 4: Get the number of challenge characters ---
+		// The lock_chars value was set when the block was activated with --lock.
+		// It's stored in the database so we know how many characters to generate.
+		detail, err := database.GetBlock(blockName)
 		if err != nil {
 			return err
 		}
 
-		// --- Passo 5: Executar o desafio de digitação ---
-		// RunChallenge gera uma string aleatória, mostra para o usuário,
-		// lê o que ele digitou e compara caractere por caractere.
-		// Retorna true se o desafio foi completado com sucesso.
-		sucesso, err := lock.RunChallenge(detalhe.LockChars)
+		// --- Step 5: Run the typing challenge ---
+		// RunChallenge generates a random string, shows it to the user,
+		// reads what they typed and compares it character by character.
+		// Returns true if the challenge was completed successfully.
+		success, err := lock.RunChallenge(detail.LockChars)
 		if err != nil {
-			return fmt.Errorf("erro ao executar desafio de desbloqueio: %w", err)
+			return fmt.Errorf("failed to run unlock challenge: %w", err)
 		}
 
-		// --- Passo 6: Se falhou, o bloqueio permanece ---
-		if !sucesso {
-			fmt.Println("Desbloqueio falhou. O bloco permanece ativo e travado.")
+		// --- Step 6: If it failed, the block stays in place ---
+		if !success {
+			fmt.Println("Unlock failed. The block remains active and locked.")
 			os.Exit(1)
 		}
 
-		// --- Passo 7: Desafio bem-sucedido — desativar o bloco ---
-		if err := database.DeactivateBlock(nomeBLoco); err != nil {
+		// --- Step 7: Challenge passed — deactivate the block ---
+		if err := database.DeactivateBlock(blockName); err != nil {
 			return err
 		}
 
-		// --- Passo 8: Reaplicar ou remover camadas (mesma lógica do stop) ---
-		if err := reaplicarOuRemoverCamadas(database); err != nil {
+		// --- Step 8: Reapply or remove layers (same logic as stop) ---
+		if err := reapplyOrRemoveLayers(database); err != nil {
 			return err
 		}
 
-		fmt.Printf("Bloco '%s' desbloqueado e desativado com sucesso\n", nomeBLoco)
+		fmt.Printf("Block '%s' unlocked and deactivated successfully\n", blockName)
 		return nil
 	},
 }
 
 // ============================================================================
-// statusCmd — Mostrar status de todos os blocos
+// statusCmd — Show the status of every block
 // ============================================================================
 
-// statusCmd exibe um resumo do estado atual de todos os blocos cadastrados.
+// statusCmd shows a summary of the current state of every registered block.
 //
-// Uso: open-turkey status
+// Usage: open-turkey status
 //
-// Exemplo de saída:
+// Example output:
 //
-//   === Status do Open Turkey ===
+//   === Open Turkey Status ===
 //
-//   Blocos ativos:
-//     redes-sociais [TRAVADO - 300 chars]
-//     jogos
+//   Active blocks:
+//     social-media [LOCKED - 300 chars]
+//     games
 //
-//   Blocos inativos:
-//     trabalho
+//   Inactive blocks:
+//     work
 //
-//   Total: 3 blocos (2 ativos, 1 inativo)
+//   Total: 3 blocks (2 active, 1 inactive)
 //
-// Este comando é útil para ter uma visão geral rápida sem precisar
-// inspecionar cada bloco individualmente.
+// This command is useful for a quick overview without having to inspect
+// each block individually.
 var statusCmd = &cobra.Command{
 	Use:   "status",
-	Short: "Mostrar status de todos os blocos",
+	Short: "Show the status of all blocks",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// --- Passo 1: Abrir o banco de dados ---
+		// --- Step 1: Open the database ---
 		database, err := openDB()
 		if err != nil {
 			return err
 		}
 		defer database.Close()
 
-		// --- Passo 2: Buscar todos os blocos cadastrados ---
-		// ListBlocks retorna todos os blocos com contagem de sites/apps.
-		blocos, err := database.ListBlocks()
+		// --- Step 2: Fetch every registered block ---
+		// ListBlocks returns every block with its site/app counts.
+		blocks, err := database.ListBlocks()
 		if err != nil {
 			return err
 		}
 
-		// Se não há blocos cadastrados, avisamos o usuário.
-		if len(blocos) == 0 {
-			fmt.Println("Nenhum bloco cadastrado. Crie um com 'open-turkey block create'.")
+		// If there are no registered blocks, tell the user.
+		if len(blocks) == 0 {
+			fmt.Println("No blocks registered. Create one with 'open-turkey block create'.")
 			return nil
 		}
 
-		// --- Passo 3: Buscar informações de ativação de cada bloco ---
-		// Precisamos saber quais blocos estão ativos e se estão travados.
-		// Para isso, consultamos GetBlock para cada bloco, que traz o status
-		// completo (ativo, travado, lock_chars).
+		// --- Step 3: Fetch activation info for each block ---
+		// We need to know which blocks are active and whether they're locked.
+		// For that, we call GetBlock for each block, which returns the full
+		// status (active, locked, lock_chars).
 		//
-		// Separamos os blocos em duas listas: ativos e inativos.
-		// Cada bloco ativo vira uma string formatada com ou sem "[TRAVADO]".
-		var blocosAtivos []string
-		var blocosInativos []string
+		// We split the blocks into two lists: active and inactive.
+		// Each active block becomes a string formatted with or without "[LOCKED]".
+		var activeBlocks []string
+		var inactiveBlocks []string
 
-		for _, bloco := range blocos {
-			// GetBlock retorna detalhes completos incluindo Active, Locked, LockChars.
-			detalhe, err := database.GetBlock(bloco.Name)
+		for _, block := range blocks {
+			// GetBlock returns full details including Active, Locked, LockChars.
+			detail, err := database.GetBlock(block.Name)
 			if err != nil {
 				return err
 			}
 
-			if detalhe.Active {
-				// Se está ativo, formatamos com informação de trava (se houver).
-				if detalhe.Locked {
-					blocosAtivos = append(blocosAtivos, fmt.Sprintf("  %s [TRAVADO - %d chars]", detalhe.Name, detalhe.LockChars))
+			if detail.Active {
+				// If it's active, format it with lock info (if any).
+				if detail.Locked {
+					activeBlocks = append(activeBlocks, fmt.Sprintf("  %s [LOCKED - %d chars]", detail.Name, detail.LockChars))
 				} else {
-					blocosAtivos = append(blocosAtivos, fmt.Sprintf("  %s", detalhe.Name))
+					activeBlocks = append(activeBlocks, fmt.Sprintf("  %s", detail.Name))
 				}
 			} else {
-				blocosInativos = append(blocosInativos, fmt.Sprintf("  %s", detalhe.Name))
+				inactiveBlocks = append(inactiveBlocks, fmt.Sprintf("  %s", detail.Name))
 			}
 		}
 
-		// --- Passo 4: Imprimir o relatório formatado ---
-		fmt.Println("=== Status do Open Turkey ===")
+		// --- Step 4: Print the formatted report ---
+		fmt.Println("=== Open Turkey Status ===")
 		fmt.Println()
 
-		// Seção de blocos ativos.
-		fmt.Println("Blocos ativos:")
-		if len(blocosAtivos) == 0 {
-			fmt.Println("  (nenhum)")
+		// Active blocks section.
+		fmt.Println("Active blocks:")
+		if len(activeBlocks) == 0 {
+			fmt.Println("  (none)")
 		} else {
-			for _, linha := range blocosAtivos {
-				fmt.Println(linha)
+			for _, line := range activeBlocks {
+				fmt.Println(line)
 			}
 		}
 
 		fmt.Println()
 
-		// Seção de blocos inativos.
-		fmt.Println("Blocos inativos:")
-		if len(blocosInativos) == 0 {
-			fmt.Println("  (nenhum)")
+		// Inactive blocks section.
+		fmt.Println("Inactive blocks:")
+		if len(inactiveBlocks) == 0 {
+			fmt.Println("  (none)")
 		} else {
-			for _, linha := range blocosInativos {
-				fmt.Println(linha)
+			for _, line := range inactiveBlocks {
+				fmt.Println(line)
 			}
 		}
 
 		fmt.Println()
 
-		// Linha de totais.
-		totalAtivos := len(blocosAtivos)
-		totalInativos := len(blocosInativos)
-		total := totalAtivos + totalInativos
-		fmt.Printf("Total: %d blocos (%d ativos, %d inativo)\n", total, totalAtivos, totalInativos)
+		// Totals line.
+		totalActive := len(activeBlocks)
+		totalInactive := len(inactiveBlocks)
+		total := totalActive + totalInactive
+		fmt.Printf("Total: %d blocks (%d active, %d inactive)\n", total, totalActive, totalInactive)
 
 		return nil
 	},
 }
 
 // ============================================================================
-// Funções auxiliares
+// Helper functions
 // ============================================================================
 
-// reaplicarOuRemoverCamadas atualiza as camadas de bloqueio após uma desativação.
+// reapplyOrRemoveLayers updates the blocking layers after a change to the
+// active blocks.
 //
-// Esta função centraliza a lógica comum entre stopCmd e unlockCmd:
-// após desativar um bloco, precisamos decidir se reaplicamos as camadas
-// com os domínios restantes ou se removemos tudo.
+// This function centralizes the logic shared by stopCmd, unlockCmd and the
+// block-editing commands: after a change, we need to decide whether to
+// reapply the layers with the remaining domains or remove everything.
 //
-// Dois cenários possíveis:
+// Two possible scenarios:
 //
-//  1. Ainda existem blocos ativos: reaplicamos todas as 4 camadas com os
-//     domínios/apps dos blocos que permaneceram ativos. Isso garante que
-//     os outros bloqueios continuem funcionando.
+//  1. Active blocks still exist: reapply all 4 layers with the domains/apps
+//     of the blocks that are still active. This ensures the other blocks
+//     keep working.
 //
-//  2. Nenhum bloco ativo restante: removemos todas as camadas completamente.
-//     O sistema volta ao estado "livre" — nenhum site ou app bloqueado.
-func reaplicarOuRemoverCamadas(database *db.DB) error {
-	// Buscamos os domínios e apps restantes (dos blocos que ainda estão ativos).
-	dominios, err := database.GetAllBlockedDomains()
+//  2. No active blocks remain: remove every layer completely.
+//     The system returns to the "free" state — no site or app blocked.
+func reapplyOrRemoveLayers(database *db.DB) error {
+	// Fetch the remaining domains and apps (from blocks that are still active).
+	domains, err := database.GetAllBlockedDomains()
 	if err != nil {
-		return fmt.Errorf("erro ao buscar domínios bloqueados restantes: %w", err)
+		return fmt.Errorf("failed to fetch remaining blocked domains: %w", err)
 	}
 
 	apps, err := database.GetAllBlockedApps()
 	if err != nil {
-		return fmt.Errorf("erro ao buscar apps bloqueados restantes: %w", err)
+		return fmt.Errorf("failed to fetch remaining blocked apps: %w", err)
 	}
 
-	// Buscamos os blocos ativos para saber se ainda há algum.
-	blocosAtivos, err := database.GetActiveBlocks()
+	// Fetch the active blocks to know whether any remain.
+	activeBlocks, err := database.GetActiveBlocks()
 	if err != nil {
-		return fmt.Errorf("erro ao buscar blocos ativos: %w", err)
+		return fmt.Errorf("failed to fetch active blocks: %w", err)
 	}
 
-	if len(blocosAtivos) > 0 {
-		// Cenário 1: Ainda há blocos ativos — reaplicar todas as camadas.
-		// Recriamos tudo do zero com os domínios restantes para garantir
-		// consistência. É mais seguro que tentar remover domínios individualmente.
+	if len(activeBlocks) > 0 {
+		// Scenario 1: Blocks are still active — reapply every layer.
+		// Rebuild everything from scratch with the remaining domains to
+		// guarantee consistency. It's safer than trying to remove domains
+		// individually.
 
-		if err := blocker.ApplyHosts(dominios); err != nil {
-			return fmt.Errorf("erro ao reaplicar bloqueio no /etc/hosts: %w", err)
+		if err := blocker.ApplyHosts(domains); err != nil {
+			return fmt.Errorf("failed to reapply /etc/hosts block: %w", err)
 		}
 
-		if err := blocker.ApplyFirewall(dominios); err != nil {
-			return fmt.Errorf("erro ao reaplicar bloqueio no firewall: %w", err)
+		if err := blocker.ApplyFirewall(domains); err != nil {
+			return fmt.Errorf("failed to reapply firewall block: %w", err)
 		}
 
-		if err := blocker.ApplyBrowserPolicies(dominios); err != nil {
-			return fmt.Errorf("erro ao reaplicar políticas de navegador: %w", err)
+		if err := blocker.ApplyBrowserPolicies(domains); err != nil {
+			return fmt.Errorf("failed to reapply browser policies: %w", err)
 		}
 
-		// Matar processos dos blocos que ainda estão ativos.
+		// Kill processes from the blocks that are still active.
 		if len(apps) > 0 {
 			blocker.KillBlocked(apps)
 		}
 	} else {
-		// Cenário 2: Nenhum bloco ativo — remover todas as camadas.
-		// O sistema volta ao estado "limpo" — sem bloqueios.
+		// Scenario 2: No active blocks — remove every layer.
+		// The system returns to the "clean" state — no blocks.
 
 		if err := blocker.RemoveHosts(); err != nil {
-			return fmt.Errorf("erro ao remover bloqueio do /etc/hosts: %w", err)
+			return fmt.Errorf("failed to remove /etc/hosts block: %w", err)
 		}
 
 		if err := blocker.RemoveFirewall(); err != nil {
-			return fmt.Errorf("erro ao remover bloqueio do firewall: %w", err)
+			return fmt.Errorf("failed to remove firewall block: %w", err)
 		}
 
 		if err := blocker.RemoveBrowserPolicies(); err != nil {
-			return fmt.Errorf("erro ao remover políticas de navegador: %w", err)
+			return fmt.Errorf("failed to remove browser policies: %w", err)
 		}
 	}
 
@@ -537,27 +541,27 @@ func reaplicarOuRemoverCamadas(database *db.DB) error {
 }
 
 // ============================================================================
-// init() — Registra os comandos no Cobra
+// init() — Registers the commands with Cobra
 // ============================================================================
 
-// init() é chamada automaticamente pelo Go quando o pacote é importado.
-// Aqui registramos nossos comandos como filhos do rootCmd (comando raiz),
-// tornando-os disponíveis como subcomandos:
+// init() is called automatically by Go when the package is imported.
+// Here we register our commands as children of rootCmd (the root command),
+// making them available as subcommands:
 //   open-turkey start ...
 //   open-turkey stop ...
 //   open-turkey unlock ...
 //   open-turkey status
 //
-// Também configuramos as flags do startCmd aqui, pois o Cobra exige que
-// as flags sejam registradas antes da execução do comando.
+// We also configure startCmd's flags here, since Cobra requires flags to be
+// registered before the command runs.
 func init() {
-	// Registramos as flags do startCmd.
-	// Flags().BoolP e Flags().IntP criam flags com nome longo e curto.
-	// Neste caso, só usamos nome longo (sem atalho de uma letra).
-	startCmd.Flags().Bool("lock", false, "Travar o bloco (requer desafio para desativar)")
-	startCmd.Flags().Int("lock-chars", lock.DefaultLockChars, "Quantidade de caracteres do desafio de desbloqueio")
+	// Register startCmd's flags.
+	// Flags().Bool and Flags().Int create flags with a long name only
+	// (no one-letter shorthand).
+	startCmd.Flags().Bool("lock", false, "Lock the block (requires a challenge to deactivate)")
+	startCmd.Flags().Int("lock-chars", lock.DefaultLockChars, "Number of characters in the unlock challenge")
 
-	// Adicionamos todos os comandos como filhos do comando raiz.
+	// Add every command as a child of the root command.
 	rootCmd.AddCommand(startCmd)
 	rootCmd.AddCommand(stopCmd)
 	rootCmd.AddCommand(unlockCmd)

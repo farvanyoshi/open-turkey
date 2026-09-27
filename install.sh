@@ -1,54 +1,54 @@
 #!/bin/bash
 # =============================================================================
-# Open Turkey - Script de Instalacao
-# Bloqueador de produtividade para Linux
+# Open Turkey - Install Script
+# Productivity blocker for Linux
 #
-# Este script automatiza a compilacao e instalacao do Open Turkey.
-# Deve ser executado como root (ou via sudo).
+# This script automates compiling and installing Open Turkey.
+# It must be run as root (or via sudo).
 # =============================================================================
 
 set -euo pipefail
 
-# --- Verifica se o script esta sendo executado como root ---
-# O Open Turkey precisa de privilegios de root para:
-#   - copiar o binario para /usr/local/bin
-#   - instalar o servico do systemd
-#   - criar o diretorio do banco de dados
+# --- Check that the script is running as root ---
+# Open Turkey needs root privileges to:
+#   - copy the binary to /usr/local/bin
+#   - install the systemd service
+#   - create the database directory
 if [ "$(id -u)" -ne 0 ]; then
-    echo "Erro: este script precisa ser executado como root."
-    echo "Uso: sudo ./install.sh"
+    echo "Error: this script must be run as root."
+    echo "Usage: sudo ./install.sh"
     exit 1
 fi
 
-# --- Navega ate o diretorio do projeto ---
-# Garante que os comandos make encontrem o Makefile
+# --- Change to the project directory ---
+# Ensures the make commands find the Makefile
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# --- Compila o binario ---
-echo "==> Etapa 1/2: Compilando o Open Turkey..."
+# --- Compile the binary ---
+echo "==> Step 1/2: Compiling Open Turkey..."
 make build
 
-# --- Instala o binario, servico e configura o systemd ---
-echo "==> Etapa 2/2: Instalando o Open Turkey..."
+# --- Install the binary and service, and configure systemd ---
+echo "==> Step 2/2: Installing Open Turkey..."
 make install
 
-# --- Mensagem de sucesso com instrucoes de uso ---
+# --- Success message with usage instructions ---
 echo ""
 echo "============================================="
-echo "  Open Turkey instalado com sucesso!"
+echo "  Open Turkey installed successfully!"
 echo "============================================="
 echo ""
-echo "Comandos uteis:"
-echo "  open-turkey block create <bloco>                 - Cria um bloco"
-echo "  open-turkey block add-site <bloco> <dominios...> - Adiciona sites ao bloco"
-echo "  open-turkey block remove-site <bloco> <dominios...> - Remove sites do bloco"
-echo "  open-turkey start <bloco>                        - Ativa um bloco"
-echo "  open-turkey stop <bloco>                         - Desativa um bloco (se nao estiver travado)"
-echo "  open-turkey status                               - Exibe o status dos blocos"
+echo "Useful commands:"
+echo "  open-turkey block create <block>                    - Create a block"
+echo "  open-turkey block add-site <block> <domains...>     - Add sites to the block"
+echo "  open-turkey block remove-site <block> <domains...>  - Remove sites from the block"
+echo "  open-turkey start <block>                           - Activate a block"
+echo "  open-turkey stop <block>                            - Deactivate a block (if not locked)"
+echo "  open-turkey status                                  - Show the status of the blocks"
 echo ""
-echo "Gerenciamento do servico:"
-echo "  systemctl status open-turkey   - Ver status do servico"
-echo "  systemctl restart open-turkey  - Reiniciar o servico"
-echo "  journalctl -u open-turkey -f   - Acompanhar logs em tempo real"
+echo "Service management:"
+echo "  systemctl status open-turkey   - View service status"
+echo "  systemctl restart open-turkey  - Restart the service"
+echo "  journalctl -u open-turkey -f   - Follow logs in real time"
 echo ""

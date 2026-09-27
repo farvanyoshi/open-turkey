@@ -1,44 +1,44 @@
 # Open Turkey
 
-Bloqueador de produtividade para Linux via linha de comando (CLI) + serviço `systemd`.
+A command-line (CLI) productivity blocker for Linux, backed by a `systemd` service.
 
-Organiza o bloqueio em **blocos** (grupos nomeados) de **sites** (domínios) e
-**apps** (nomes de processos). Ao ativar um bloco, um daemon systemd garante
-continuamente que as camadas de bloqueio estejam aplicadas.
+Blocking is organized into **blocks** (named groups) of **sites** (domains) and
+**apps** (process names). When a block is activated, a systemd daemon
+continuously ensures the blocking layers stay applied.
 
 ## Build
 
 ```bash
 export PATH="/usr/local/go/bin:$PATH"
 make build            # CGO_ENABLED=0 go build -o open-turkey ./cmd/open-turkey
-sudo ./install.sh     # compila + instala binário, wrapper, sudoers, systemd e DB
+sudo ./install.sh     # compiles + installs binary, wrapper, sudoers, systemd and DB
 ```
 
-Build sem CGo porque o driver SQLite é `modernc.org/sqlite` (Go puro). Para
-verificar a compilação inteira: `CGO_ENABLED=0 go build ./...`.
+Built without CGo because the SQLite driver is `modernc.org/sqlite` (pure Go). To
+check that everything compiles: `CGO_ENABLED=0 go build ./...`.
 
-## Arquitetura
+## Architecture
 
-- **Entrypoint** (`cmd/open-turkey/main.go`): enxuto, só delega a `cli.Execute()`.
-- **CLI** (`internal/cli/`): comandos Cobra. `block.go` (CRUD de blocos),
+- **Entrypoint** (`cmd/open-turkey/main.go`): lean, just delegates to `cli.Execute()`.
+- **CLI** (`internal/cli/`): Cobra commands. `block.go` (block CRUD),
   `control.go` (`start`/`stop`/`unlock`/`status`).
-- **Camadas de bloqueio** (`internal/blocker/`): `/etc/hosts`, firewall iptables,
-  políticas de navegador (Firefox/Chrome/Chromium) e kill de processos.
-- **Daemon** (`internal/daemon/`): serviço systemd, reaplica as camadas a cada 5s
-  caso algo seja alterado manualmente.
-- **DB** (`internal/db/`): SQLite em `/var/lib/open-turkey/open-turkey.db` (WAL).
-- **Lock** (`internal/lock/`): desafio de digitação que trava a desativação de um
-  bloco (`--lock`), criando atrito contra desativação impulsiva.
+- **Blocking layers** (`internal/blocker/`): `/etc/hosts`, iptables firewall,
+  browser policies (Firefox/Chrome/Chromium/Brave) and process killing.
+- **Daemon** (`internal/daemon/`): systemd service, reapplies the layers every 5s
+  in case anything is changed manually.
+- **DB** (`internal/db/`): SQLite at `/var/lib/open-turkey/open-turkey.db` (WAL).
+- **Lock** (`internal/lock/`): typing challenge that locks a block's deactivation
+  (`--lock`), creating friction against impulsive deactivation.
 
-## Instalação no sistema
+## System installation
 
-`make install` copia tudo para fora do diretório-fonte: binário real em
-`/usr/local/bin/open-turkey-bin`, wrapper `open-turkey` (faz `exec sudo`), regra
-em `/etc/sudoers.d/open-turkey`, unidade `open-turkey.service` e o DB em
-`/var/lib/open-turkey/`. O programa instalado não depende da pasta do projeto.
+`make install` copies everything outside the source directory: the real binary to
+`/usr/local/bin/open-turkey-bin`, the `open-turkey` wrapper (does `exec sudo`), a rule
+in `/etc/sudoers.d/open-turkey`, the `open-turkey.service` unit and the DB in
+`/var/lib/open-turkey/`. The installed program doesn't depend on the project folder.
 
-## Comandos
+## Commands
 
-Uso e exemplos completos no `README.md`. Resumo:
+Full usage and examples in `README.md`. Summary:
 `block create|add-site|add-app|remove-site|remove-app|list|info|remove`,
 `start [--lock]`, `stop`, `unlock`, `status`.

@@ -1,17 +1,19 @@
-// Package daemon implementa o loop principal do servi\u00e7o em segundo plano do Open Turkey.
+// Package daemon implements the main loop of Open Turkey's background service.
 //
-// O daemon roda como um servi\u00e7o systemd e tem uma responsabilidade simples mas crucial:
-// garantir que todas as camadas de bloqueio estejam sempre aplicadas corretamente.
+// The daemon runs as a systemd service and has a simple but crucial job:
+// making sure every blocking layer is always correctly applied.
 //
-// A cada 5 segundos, ele verifica se algu\u00e9m (ou algum programa) removeu ou alterou
-// as regras de bloqueio \u2014 por exemplo, editando o /etc/hosts manualmente ou limpando
-// as regras do iptables. Se detectar qualquer altera\u00e7\u00e3o, ele reaplica tudo.
+// Every 5 seconds, it checks whether someone (or some program) removed or
+// changed the blocking rules — for example, by manually editing /etc/hosts or
+// flushing the iptables rules. If it detects any change, it reapplies
+// everything.
 //
-// Al\u00e9m disso, o daemon tamb\u00e9m mata processos de aplicativos bloqueados a cada ciclo,
-// impedindo que o usu\u00e1rio simplesmente abra o app enquanto o bloqueio est\u00e1 ativo.
+// In addition, the daemon also kills blocked application processes on every
+// cycle, preventing the user from simply opening the app while the block is
+// active.
 //
-// O daemon trata sinais SIGTERM e SIGINT para encerrar de forma limpa (graceful shutdown),
-// sem deixar recursos pendurados.
+// The daemon handles SIGTERM and SIGINT to shut down cleanly (graceful
+// shutdown), without leaving resources hanging.
 package daemon
 
 import (
@@ -25,104 +27,102 @@ import (
 	"github.com/brunodcdo/open-turkey/internal/db"
 )
 
-// Run \u00e9 a fun\u00e7\u00e3o principal do daemon. Ela inicia o loop de fiscaliza\u00e7\u00e3o
-// que roda indefinidamente at\u00e9 receber um sinal de encerramento.
+// Run is the daemon's main function. It starts the enforcement loop, which
+// runs indefinitely until it receives a shutdown signal.
 //
-// Fluxo geral:
-//  1. Abre o banco de dados no caminho padr\u00e3o
-//  2. Configura o tratamento de sinais (SIGTERM e SIGINT)
-//  3. Cria um ticker que dispara a cada 5 segundos
-//  4. Executa um ciclo de fiscaliza\u00e7\u00e3o imediatamente ao iniciar
-//  5. Entra no loop principal, onde alterna entre ticks e sinais
+// Overall flow:
+//  1. Open the database at the default path
+//  2. Set up signal handling (SIGTERM and SIGINT)
+//  3. Create a ticker that fires every 5 seconds
+//  4. Run an enforcement cycle immediately on startup
+//  5. Enter the main loop, alternating between ticks and signals
 func Run() error {
-	// Abrimos o banco de dados onde ficam armazenados os bloqueios ativos.
-	// O caminho padr\u00e3o \u00e9 definido pelo pacote db (geralmente em /var/lib/open-turkey/).
+	// Open the database where the active blocks are stored.
+	// The default path is defined by the db package (usually under /var/lib/open-turkey/).
 	database, err := db.OpenDB(db.DefaultDBPath)
 	if err != nil {
 		return err
 	}
 	defer database.Close()
 
-	// Configuramos um canal para receber sinais do sistema operacional.
-	// SIGTERM \u00e9 enviado pelo systemd ao parar o servi\u00e7o.
-	// SIGINT \u00e9 enviado quando o usu\u00e1rio pressiona Ctrl+C (ex: em testes manuais).
+	// Set up a channel to receive operating system signals.
+	// SIGTERM is sent by systemd when stopping the service.
+	// SIGINT is sent when the user presses Ctrl+C (e.g. in manual testing).
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGTERM, syscall.SIGINT)
 
-	// O ticker dispara a cada 5 segundos. Esse \u00e9 o "cora\u00e7\u00e3o" do daemon:
-	// ele garante que a fiscaliza\u00e7\u00e3o acontece periodicamente, sem pausas longas
-	// que permitiriam ao usu\u00e1rio burlar o bloqueio.
+	// The ticker fires every 5 seconds. This is the "heart" of the daemon:
+	// it ensures enforcement happens periodically, without long pauses that
+	// would let the user get around the block.
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
-	log.Println("daemon: iniciando loop de fiscaliza\u00e7\u00e3o do Open Turkey")
+	log.Println("daemon: starting Open Turkey enforcement loop")
 
-	// Executamos um ciclo imediatamente ao iniciar, sem esperar os primeiros
-	// 5 segundos. Isso garante que, ao ligar o daemon, as regras j\u00e1 s\u00e3o
-	// aplicadas na hora.
+	// Run one cycle immediately on startup, without waiting for the first
+	// 5 seconds. This ensures that when the daemon starts, the rules are
+	// applied right away.
 	if err := enforce(database); err != nil {
-		// N\u00e3o interrompemos o daemon por causa de um erro no ciclo.
-		// Apenas logamos e seguimos em frente \u2014 resili\u00eancia \u00e9 prioridade.
-		log.Printf("daemon: erro no ciclo inicial de fiscaliza\u00e7\u00e3o: %v", err)
+		// We don't stop the daemon because of an error in the cycle.
+		// We just log it and move on — resilience is the priority.
+		log.Printf("daemon: error in initial enforcement cycle: %v", err)
 	}
 
-	// Loop principal do daemon.
-	// Usamos select para esperar por dois tipos de evento:
-	//   - tick do ticker (hora de fiscalizar de novo)
-	//   - sinal do SO (hora de encerrar)
+	// Main daemon loop.
+	// We use select to wait for two kinds of event:
+	//   - a ticker tick (time to enforce again)
+	//   - an OS signal (time to shut down)
 	for {
 		select {
 		case <-ticker.C:
-			// A cada 5 segundos, executamos um ciclo completo de fiscaliza\u00e7\u00e3o.
-			// Se algo falhar, logamos o erro mas continuamos rodando.
+			// Every 5 seconds, run a full enforcement cycle.
+			// If something fails, we log the error but keep running.
 			if err := enforce(database); err != nil {
-				log.Printf("daemon: erro no ciclo de fiscaliza\u00e7\u00e3o: %v", err)
+				log.Printf("daemon: error in enforcement cycle: %v", err)
 			}
 
 		case sig := <-sigChan:
-			// Recebemos um sinal de encerramento. Logamos e sa\u00edmos de forma limpa.
-			log.Printf("daemon: sinal recebido (%v), encerrando graciosamente...", sig)
+			// We received a shutdown signal. Log it and exit cleanly.
+			log.Printf("daemon: signal received (%v), shutting down gracefully...", sig)
 			return nil
 		}
 	}
 }
 
-// enforce executa um \u00fanico ciclo de fiscaliza\u00e7\u00e3o.
+// enforce runs a single enforcement cycle.
 //
-// Essa fun\u00e7\u00e3o \u00e9 o n\u00facleo do daemon. Ela verifica se cada camada de bloqueio
-// est\u00e1 corretamente aplicada e, caso n\u00e3o esteja, reaplica.
+// This function is the core of the daemon. It checks whether each blocking
+// layer is correctly applied and, if not, reapplies it.
 //
-// As camadas verificadas s\u00e3o:
-//   - /etc/hosts: bloqueia dom\u00ednios resolvendo para 127.0.0.1
-//   - Firewall (iptables): bloqueia conex\u00f5es de rede para os dom\u00ednios
-//   - Pol\u00edticas de navegador: impede acesso via Chrome/Firefox policies
-//   - Processos: mata aplicativos bloqueados que estejam rodando
+// The layers checked are:
+//   - /etc/hosts: blocks domains by resolving them to 0.0.0.0
+//   - Firewall (iptables): blocks network connections to the domains
+//   - Browser policies: prevents access via Chrome/Firefox policies
+//   - Processes: kills blocked applications that are running
 //
-// Importante: se uma camada falhar, as outras ainda s\u00e3o verificadas.
-// Isso garante m\u00e1xima resili\u00eancia \u2014 um erro no iptables n\u00e3o deve
-// impedir o bloqueio via /etc/hosts, por exemplo.
+// Important: if one layer fails, the others are still checked.
+// This ensures maximum resilience — an iptables error shouldn't prevent the
+// /etc/hosts block, for example.
 func enforce(database *db.DB) error {
-	// Buscamos todos os bloqueios ativos no banco de dados.
-	// Um bloqueio est\u00e1 ativo se o hor\u00e1rio atual est\u00e1 dentro do per\u00edodo configurado.
+	// Fetch every active block from the database.
 	activeBlocks, err := database.GetActiveBlocks()
 	if err != nil {
 		return err
 	}
 
-	// Se n\u00e3o houver bloqueios ativos, garantimos que todas as camadas
-	// est\u00e3o removidas (estado limpo). Isso evita que regras orf\u00e3s
-	// fiquem penduradas ap\u00f3s o t\u00e9rmino de um bloqueio.
+	// If there are no active blocks, make sure every layer is removed (clean
+	// state). This prevents orphaned rules from lingering after a block ends.
 	if len(activeBlocks) == 0 {
-		// Removemos cada camada individualmente para garantir estado limpo.
+		// Remove each layer individually to guarantee a clean state.
 		blocker.RemoveHosts()
 		blocker.RemoveFirewall()
 		blocker.RemoveBrowserPolicies()
 		return nil
 	}
 
-	// Coletamos todos os dom\u00ednios e aplicativos de todos os bloqueios ativos.
-	// V\u00e1rios bloqueios podem estar ativos ao mesmo tempo (ex: "redes sociais"
-	// e "jogos"), ent\u00e3o precisamos unificar as listas.
+	// Collect every domain and application from every active block.
+	// Several blocks may be active at the same time (e.g. "social media"
+	// and "games"), so we need to merge the lists.
 	var domains []string
 	var apps []string
 
@@ -131,47 +131,47 @@ func enforce(database *db.DB) error {
 		apps = append(apps, block.Apps...)
 	}
 
-	// --- Camada 1: /etc/hosts ---
-	// Verificamos se os dom\u00ednios j\u00e1 est\u00e3o mapeados para 127.0.0.1 no /etc/hosts.
-	// Se algu\u00e9m editou o arquivo manualmente para remover as entradas, reaplicamos.
+	// --- Layer 1: /etc/hosts ---
+	// Check whether the domains are already mapped to 0.0.0.0 in /etc/hosts.
+	// If someone manually edited the file to remove the entries, reapply.
 	if !blocker.IsHostsApplied(domains) {
-		log.Println("daemon: /etc/hosts desatualizado, reaplicando bloqueios")
+		log.Println("daemon: /etc/hosts out of date, reapplying blocks")
 		if err := blocker.ApplyHosts(domains); err != nil {
-			// Logamos o erro mas continuamos para as pr\u00f3ximas camadas.
-			log.Printf("daemon: erro ao aplicar /etc/hosts: %v", err)
+			// Log the error but continue to the next layers.
+			log.Printf("daemon: error applying /etc/hosts: %v", err)
 		}
 	}
 
-	// --- Camada 2: Firewall (iptables) ---
-	// Verificamos se as regras de firewall est\u00e3o presentes.
-	// Se algu\u00e9m executou "iptables -F" para limpar as regras, reaplicamos.
+	// --- Layer 2: Firewall (iptables) ---
+	// Check whether the firewall rules are present.
+	// If someone ran "iptables -F" to flush the rules, reapply.
 	if !blocker.IsFirewallApplied() {
-		log.Println("daemon: regras de firewall ausentes, reaplicando")
+		log.Println("daemon: firewall rules missing, reapplying")
 		if err := blocker.ApplyFirewall(domains); err != nil {
-			log.Printf("daemon: erro ao aplicar firewall: %v", err)
+			log.Printf("daemon: error applying firewall: %v", err)
 		}
 	}
 
-	// --- Camada 3: Pol\u00edticas de navegador ---
-	// Verificamos se as pol\u00edticas do Chrome/Firefox est\u00e3o configuradas.
-	// Essas pol\u00edticas impedem o acesso mesmo se o usu\u00e1rio usar DNS alternativo.
+	// --- Layer 3: Browser policies ---
+	// Check whether the Chrome/Firefox policies are configured.
+	// These policies block access even if the user uses an alternative DNS.
 	if !blocker.IsBrowserPoliciesApplied(domains) {
-		log.Println("daemon: pol\u00edticas de navegador desatualizadas, reaplicando")
+		log.Println("daemon: browser policies out of date, reapplying")
 		if err := blocker.ApplyBrowserPolicies(domains); err != nil {
-			log.Printf("daemon: erro ao aplicar pol\u00edticas de navegador: %v", err)
+			log.Printf("daemon: error applying browser policies: %v", err)
 		}
 	}
 
-	// --- Camada 4: Matar processos bloqueados ---
-	// Procuramos por processos de aplicativos bloqueados e os encerramos.
-	// Isso impede o uso de apps como jogos ou redes sociais no desktop.
+	// --- Layer 4: Kill blocked processes ---
+	// Look for processes of blocked applications and terminate them.
+	// This prevents using apps like games or social media on the desktop.
 	if len(apps) > 0 {
 		killed, err := blocker.KillBlocked(apps)
 		if err != nil {
-			log.Printf("daemon: erro ao matar processos bloqueados: %v", err)
+			log.Printf("daemon: error killing blocked processes: %v", err)
 		}
 		if killed > 0 {
-			log.Printf("daemon: %d processos bloqueados encerrados", killed)
+			log.Printf("daemon: %d blocked processes terminated", killed)
 		}
 	}
 

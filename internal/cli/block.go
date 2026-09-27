@@ -1,24 +1,24 @@
-// Este arquivo define os comandos CLI para gerenciar blocos no Open Turkey.
+// This file defines the CLI commands for managing blocks in Open Turkey.
 //
-// Um "bloco" é um grupo nomeado de sites e aplicativos que o usuário deseja
-// bloquear juntos. Por exemplo, um bloco "redes-sociais" pode conter os
-// domínios facebook.com, instagram.com e os processos discord, telegram.
+// A "block" is a named group of sites and applications that the user wants to
+// block together. For example, a "social-media" block might contain the
+// domains facebook.com, instagram.com and the processes discord, telegram.
 //
-// Os comandos aqui são a interface entre o usuário e o banco de dados.
-// Cada comando segue o mesmo padrão:
-//   1. Abre o banco de dados (openDB)
-//   2. Chama a função correspondente no pacote db
-//   3. Exibe o resultado ou a mensagem de erro
+// The commands here are the interface between the user and the database.
+// Each command follows the same pattern:
+//   1. Open the database (openDB)
+//   2. Call the matching function in the db package
+//   3. Print the result or the error message
 //
-// Todos os subcomandos ficam sob "open-turkey block":
-//   - open-turkey block create [nome]
-//   - open-turkey block add-site [bloco] [domínios...]
-//   - open-turkey block remove-site [bloco] [domínios...]
-//   - open-turkey block add-app [bloco] [processos...]
-//   - open-turkey block remove-app [bloco] [processos...]
+// Every subcommand lives under "open-turkey block":
+//   - open-turkey block create [name]
+//   - open-turkey block add-site [block] [domains...]
+//   - open-turkey block remove-site [block] [domains...]
+//   - open-turkey block add-app [block] [processes...]
+//   - open-turkey block remove-app [block] [processes...]
 //   - open-turkey block list
-//   - open-turkey block info [nome]
-//   - open-turkey block remove [nome]
+//   - open-turkey block info [name]
+//   - open-turkey block remove [name]
 package cli
 
 import (
@@ -32,255 +32,257 @@ import (
 )
 
 // --------------------------------------------------------------------------
-// Função auxiliar para abrir o banco de dados
+// Helper function to open the database
 // --------------------------------------------------------------------------
 
-// openDB abre a conexão com o banco de dados SQLite.
-// Antes de abrir, criamos o diretório pai caso não exista (os.MkdirAll).
-// Isso é necessário porque o SQLite não cria diretórios automaticamente —
-// ele só cria o arquivo .db, mas precisa que o diretório já exista.
+// openDB opens the connection to the SQLite database.
+// Before opening, we create the parent directory if it doesn't exist
+// (os.MkdirAll). This is needed because SQLite doesn't create directories
+// automatically — it only creates the .db file, and needs the directory to
+// already exist.
 //
-// Usamos db.DefaultDBPath para manter o caminho centralizado no pacote db.
-// Se no futuro quisermos permitir um caminho customizado (via flag),
-// basta trocar essa constante por uma variável configurável.
+// We use db.DefaultDBPath to keep the path centralized in the db package.
+// If in the future we want to allow a custom path (via a flag), we just
+// replace this constant with a configurable variable.
 func openDB() (*db.DB, error) {
-	// filepath.Dir() extrai o diretório pai do caminho completo.
-	// Exemplo: "/var/lib/open-turkey/open-turkey.db" → "/var/lib/open-turkey"
+	// filepath.Dir() extracts the parent directory from the full path.
+	// Example: "/var/lib/open-turkey/open-turkey.db" → "/var/lib/open-turkey"
 	dir := filepath.Dir(db.DefaultDBPath)
 
-	// os.MkdirAll cria o diretório e todos os pais necessários.
-	// Se o diretório já existe, não faz nada (é idempotente).
-	// Permissão 0755: dono pode ler/escrever/executar, outros podem ler/executar.
+	// os.MkdirAll creates the directory and every required parent.
+	// If the directory already exists, it does nothing (idempotent).
+	// Permission 0755: owner can read/write/execute, others can read/execute.
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		return nil, fmt.Errorf("erro ao criar diretório do banco de dados '%s': %w", dir, err)
+		return nil, fmt.Errorf("failed to create database directory '%s': %w", dir, err)
 	}
 
 	return db.OpenDB(db.DefaultDBPath)
 }
 
 // --------------------------------------------------------------------------
-// Comando pai: block
+// Parent command: block
 // --------------------------------------------------------------------------
 
-// blockCmd é o comando pai de todos os subcomandos de blocos.
-// Ele não faz nada sozinho — serve apenas como agrupador.
-// Quando o usuário digita "open-turkey block" sem subcomando,
-// o Cobra exibe a ajuda automaticamente.
+// blockCmd is the parent command of every block subcommand.
+// It does nothing on its own — it only serves as a grouping.
+// When the user types "open-turkey block" without a subcommand,
+// Cobra shows the help automatically.
 var blockCmd = &cobra.Command{
 	Use:   "block",
-	Short: "Gerenciar blocos de sites e aplicativos",
+	Short: "Manage blocks of sites and applications",
 }
 
 // --------------------------------------------------------------------------
-// Subcomando: block create
+// Subcommand: block create
 // --------------------------------------------------------------------------
 
-// blockCreateCmd cria um novo bloco com o nome fornecido.
-// O nome deve ser único — se já existir um bloco com o mesmo nome,
-// o banco de dados retornará erro.
+// blockCreateCmd creates a new block with the given name.
+// The name must be unique — if a block with the same name already exists,
+// the database returns an error.
 //
-// Uso: open-turkey block create redes-sociais
+// Usage: open-turkey block create social-media
 var blockCreateCmd = &cobra.Command{
-	Use:   "create [nome]",
-	Short: "Criar um novo bloco",
-	// cobra.ExactArgs(1) garante que o usuário passe exatamente 1 argumento.
-	// Se passar 0 ou mais de 1, o Cobra exibe uma mensagem de erro automática.
+	Use:   "create [name]",
+	Short: "Create a new block",
+	// cobra.ExactArgs(1) ensures the user passes exactly 1 argument.
+	// If they pass 0 or more than 1, Cobra shows an automatic error message.
 	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
-		// args[0] contém o nome do bloco que o usuário digitou.
+		// args[0] contains the block name the user typed.
 		name := args[0]
 
-		// Abrimos o banco de dados.
+		// Open the database.
 		database, err := openDB()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Erro: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
-		// defer garante que o banco será fechado ao sair da função,
-		// mesmo que ocorra um erro no meio do caminho.
+		// defer ensures the database is closed when leaving the function,
+		// even if an error happens along the way.
 		defer database.Close()
 
-		// Chamamos a função do pacote db para criar o bloco.
+		// Call the db package function to create the block.
 		if err := database.CreateBlock(name); err != nil {
-			fmt.Fprintf(os.Stderr, "Erro: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
 
-		fmt.Printf("Bloco '%s' criado com sucesso.\n", name)
+		fmt.Printf("Block '%s' created successfully.\n", name)
 	},
 }
 
 // --------------------------------------------------------------------------
-// Subcomando: block add-site
+// Subcommand: block add-site
 // --------------------------------------------------------------------------
 
-// blockAddSiteCmd adiciona um ou mais domínios (sites) a um bloco existente.
-// O primeiro argumento é o nome do bloco, e os demais são os domínios.
+// blockAddSiteCmd adds one or more domains (sites) to an existing block.
+// The first argument is the block name, and the rest are the domains.
 //
-// Uso: open-turkey block add-site redes-sociais facebook.com instagram.com
+// Usage: open-turkey block add-site social-media facebook.com instagram.com
 var blockAddSiteCmd = &cobra.Command{
-	Use:   "add-site [bloco] [domínios...]",
-	Short: "Adicionar sites a um bloco",
-	// cobra.MinimumNArgs(2) exige pelo menos 2 argumentos:
-	// o nome do bloco + pelo menos 1 domínio.
+	Use:   "add-site [block] [domains...]",
+	Short: "Add sites to a block",
+	// cobra.MinimumNArgs(2) requires at least 2 arguments:
+	// the block name + at least 1 domain.
 	Args: cobra.MinimumNArgs(2),
 	Run: func(cmd *cobra.Command, args []string) {
-		// O primeiro argumento é o nome do bloco.
+		// The first argument is the block name.
 		name := args[0]
-		// Os argumentos restantes são os domínios a serem adicionados.
-		// args[1:] cria uma fatia (slice) do segundo elemento em diante.
-		// Normalizamos cada domínio para garantir formato consistente no banco.
+		// The remaining arguments are the domains to add.
+		// args[1:] creates a slice from the second element onward.
+		// We normalize each domain to guarantee a consistent format in the database.
 		domains := make([]string, len(args[1:]))
 		for i, d := range args[1:] {
-			domains[i] = blocker.NormalizarDominio(d)
+			domains[i] = blocker.NormalizeDomain(d)
 		}
 
 		database, err := openDB()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Erro: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
 		defer database.Close()
 
 		if err := database.AddSites(name, domains); err != nil {
-			fmt.Fprintf(os.Stderr, "Erro: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
 
-		ativo, err := database.IsBlockActive(name)
+		active, err := database.IsBlockActive(name)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Erro: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
-		if ativo {
-			if err := reaplicarOuRemoverCamadas(database); err != nil {
-				fmt.Fprintf(os.Stderr, "Erro: %v\n", err)
+		if active {
+			if err := reapplyOrRemoveLayers(database); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
 		}
 
-		fmt.Printf("Sites adicionados ao bloco '%s' com sucesso.\n", name)
+		fmt.Printf("Sites added to block '%s' successfully.\n", name)
 	},
 }
 
 // --------------------------------------------------------------------------
-// Subcomando: block remove-site
+// Subcommand: block remove-site
 // --------------------------------------------------------------------------
 
-// blockRemoveSiteCmd remove um ou mais domínios (sites) de um bloco existente.
+// blockRemoveSiteCmd removes one or more domains (sites) from an existing block.
 //
-// Uso: open-turkey block remove-site redes-sociais facebook.com instagram.com
+// Usage: open-turkey block remove-site social-media facebook.com instagram.com
 var blockRemoveSiteCmd = &cobra.Command{
-	Use:   "remove-site [bloco] [domínios...]",
-	Short: "Remover sites de um bloco",
+	Use:   "remove-site [block] [domains...]",
+	Short: "Remove sites from a block",
 	Args:  cobra.MinimumNArgs(2),
 	Run: func(cmd *cobra.Command, args []string) {
 		name := args[0]
-		// Normalizamos cada domínio para garantir match com o que está no banco.
+		// Normalize each domain to guarantee a match with what's in the database.
 		domains := make([]string, len(args[1:]))
 		for i, d := range args[1:] {
-			domains[i] = blocker.NormalizarDominio(d)
+			domains[i] = blocker.NormalizeDomain(d)
 		}
 
 		database, err := openDB()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Erro: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
 		defer database.Close()
 
 		if err := database.RemoveSites(name, domains); err != nil {
-			fmt.Fprintf(os.Stderr, "Erro: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
 
-		ativo, err := database.IsBlockActive(name)
+		active, err := database.IsBlockActive(name)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Erro: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
-		if ativo {
-			// Se o bloco ficou vazio, desativamos para evitar um "ativo sem nada"
-			// (e para garantir que as camadas sejam removidas se não restar nada ativo).
-			detalhe, err := database.GetBlock(name)
+		if active {
+			// If the block became empty, deactivate it to avoid an "active with
+			// nothing" state (and to ensure the layers are removed if nothing
+			// active remains).
+			detail, err := database.GetBlock(name)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Erro: %v\n", err)
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
 
-			if len(detalhe.Sites) == 0 && len(detalhe.Apps) == 0 {
+			if len(detail.Sites) == 0 && len(detail.Apps) == 0 {
 				if err := database.DeactivateBlock(name); err != nil {
-					fmt.Fprintf(os.Stderr, "Erro: %v\n", err)
+					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 					os.Exit(1)
 				}
 			}
 
-			if err := reaplicarOuRemoverCamadas(database); err != nil {
-				fmt.Fprintf(os.Stderr, "Erro: %v\n", err)
+			if err := reapplyOrRemoveLayers(database); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
 		}
 
-		fmt.Printf("Sites removidos do bloco '%s' com sucesso.\n", name)
+		fmt.Printf("Sites removed from block '%s' successfully.\n", name)
 	},
 }
 
 // --------------------------------------------------------------------------
-// Subcomando: block add-app
+// Subcommand: block add-app
 // --------------------------------------------------------------------------
 
-// blockAddAppCmd adiciona um ou mais nomes de processos (apps) a um bloco existente.
-// O primeiro argumento é o nome do bloco, e os demais são os nomes dos processos.
+// blockAddAppCmd adds one or more process names (apps) to an existing block.
+// The first argument is the block name, and the rest are the process names.
 //
-// Uso: open-turkey block add-app redes-sociais discord telegram
+// Usage: open-turkey block add-app social-media discord telegram
 var blockAddAppCmd = &cobra.Command{
-	Use:   "add-app [bloco] [processos...]",
-	Short: "Adicionar aplicativos a um bloco",
-	// Mesma lógica do add-site: precisa do nome do bloco + pelo menos 1 processo.
+	Use:   "add-app [block] [processes...]",
+	Short: "Add applications to a block",
+	// Same logic as add-site: needs the block name + at least 1 process.
 	Args: cobra.MinimumNArgs(2),
 	Run: func(cmd *cobra.Command, args []string) {
 		name := args[0]
-		// Os nomes dos processos que serão bloqueados (ex: "discord", "telegram").
+		// The names of the processes to block (e.g. "discord", "telegram").
 		processNames := args[1:]
 
 		database, err := openDB()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Erro: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
 		defer database.Close()
 
 		if err := database.AddApps(name, processNames); err != nil {
-			fmt.Fprintf(os.Stderr, "Erro: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
 
-		ativo, err := database.IsBlockActive(name)
+		active, err := database.IsBlockActive(name)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Erro: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
-		if ativo {
-			if err := reaplicarOuRemoverCamadas(database); err != nil {
-				fmt.Fprintf(os.Stderr, "Erro: %v\n", err)
+		if active {
+			if err := reapplyOrRemoveLayers(database); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
 		}
 
-		fmt.Printf("Aplicativos adicionados ao bloco '%s' com sucesso.\n", name)
+		fmt.Printf("Applications added to block '%s' successfully.\n", name)
 	},
 }
 
 // --------------------------------------------------------------------------
-// Subcomando: block remove-app
+// Subcommand: block remove-app
 // --------------------------------------------------------------------------
 
-// blockRemoveAppCmd remove um ou mais nomes de processos (apps) de um bloco existente.
+// blockRemoveAppCmd removes one or more process names (apps) from an existing block.
 //
-// Uso: open-turkey block remove-app redes-sociais discord telegram
+// Usage: open-turkey block remove-app social-media discord telegram
 var blockRemoveAppCmd = &cobra.Command{
-	Use:   "remove-app [bloco] [processos...]",
-	Short: "Remover aplicativos de um bloco",
+	Use:   "remove-app [block] [processes...]",
+	Short: "Remove applications from a block",
 	Args:  cobra.MinimumNArgs(2),
 	Run: func(cmd *cobra.Command, args []string) {
 		name := args[0]
@@ -288,211 +290,211 @@ var blockRemoveAppCmd = &cobra.Command{
 
 		database, err := openDB()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Erro: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
 		defer database.Close()
 
 		if err := database.RemoveApps(name, processNames); err != nil {
-			fmt.Fprintf(os.Stderr, "Erro: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
 
-		ativo, err := database.IsBlockActive(name)
+		active, err := database.IsBlockActive(name)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Erro: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
-		if ativo {
-			detalhe, err := database.GetBlock(name)
+		if active {
+			detail, err := database.GetBlock(name)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Erro: %v\n", err)
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
 
-			if len(detalhe.Sites) == 0 && len(detalhe.Apps) == 0 {
+			if len(detail.Sites) == 0 && len(detail.Apps) == 0 {
 				if err := database.DeactivateBlock(name); err != nil {
-					fmt.Fprintf(os.Stderr, "Erro: %v\n", err)
+					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 					os.Exit(1)
 				}
 			}
 
-			if err := reaplicarOuRemoverCamadas(database); err != nil {
-				fmt.Fprintf(os.Stderr, "Erro: %v\n", err)
+			if err := reapplyOrRemoveLayers(database); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
 		}
 
-		fmt.Printf("Aplicativos removidos do bloco '%s' com sucesso.\n", name)
+		fmt.Printf("Applications removed from block '%s' successfully.\n", name)
 	},
 }
 
 // --------------------------------------------------------------------------
-// Subcomando: block list
+// Subcommand: block list
 // --------------------------------------------------------------------------
 
-// blockListCmd lista todos os blocos cadastrados no banco de dados.
-// Exibe uma tabela formatada com o nome do bloco, quantidade de sites,
-// quantidade de apps e a data de criação.
+// blockListCmd lists every block registered in the database.
+// Shows a formatted table with the block name, number of sites,
+// number of apps and the creation date.
 //
-// Uso: open-turkey block list
+// Usage: open-turkey block list
 var blockListCmd = &cobra.Command{
 	Use:   "list",
-	Short: "Listar todos os blocos",
+	Short: "List all blocks",
 	Run: func(cmd *cobra.Command, args []string) {
 		database, err := openDB()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Erro: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
 		defer database.Close()
 
-		// ListBlocks retorna uma slice (lista) de blocos com contagens.
+		// ListBlocks returns a slice (list) of blocks with counts.
 		blocks, err := database.ListBlocks()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Erro: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
 
-		// Se não há blocos cadastrados, exibimos uma mensagem amigável.
+		// If there are no registered blocks, show a friendly message.
 		if len(blocks) == 0 {
-			fmt.Println("Nenhum bloco cadastrado.")
+			fmt.Println("No blocks registered.")
 			return
 		}
 
-		// Imprimimos o cabeçalho da tabela.
-		// %-20s = string alinhada à esquerda com 20 caracteres de largura.
-		// %-6s  = string alinhada à esquerda com 6 caracteres.
-		// Esse formato garante que as colunas fiquem alinhadas visualmente.
-		fmt.Printf("%-20s %-6s %-6s %s\n", "BLOCO", "SITES", "APPS", "CRIADO EM")
+		// Print the table header.
+		// %-20s = left-aligned string, 20 characters wide.
+		// %-6s  = left-aligned string, 6 characters wide.
+		// This format keeps the columns visually aligned.
+		fmt.Printf("%-20s %-6s %-6s %s\n", "BLOCK", "SITES", "APPS", "CREATED AT")
 
-		// Iteramos sobre cada bloco e imprimimos uma linha da tabela.
+		// Iterate over each block and print a table row.
 		for _, b := range blocks {
-			// %-20s para o nome do bloco (alinhado à esquerda).
-			// %-6d para os números (alinhados à esquerda, formato inteiro).
-			// %s para a data de criação.
+			// %-20s for the block name (left-aligned).
+			// %-6d for the numbers (left-aligned, integer format).
+			// %s for the creation date.
 			fmt.Printf("%-20s %-6d %-6d %s\n", b.Name, b.SiteCount, b.AppCount, b.CreatedAt)
 		}
 	},
 }
 
 // --------------------------------------------------------------------------
-// Subcomando: block info
+// Subcommand: block info
 // --------------------------------------------------------------------------
 
-// blockInfoCmd exibe os detalhes completos de um bloco específico.
-// Mostra o nome, data de criação, status de ativação, e as listas
-// de sites e aplicativos bloqueados.
+// blockInfoCmd shows the full details of a specific block.
+// Shows the name, creation date, activation status, and the lists
+// of blocked sites and applications.
 //
-// Uso: open-turkey block info redes-sociais
+// Usage: open-turkey block info social-media
 var blockInfoCmd = &cobra.Command{
-	Use:   "info [nome]",
-	Short: "Mostrar detalhes de um bloco",
+	Use:   "info [name]",
+	Short: "Show details of a block",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		name := args[0]
 
 		database, err := openDB()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Erro: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
 		defer database.Close()
 
-		// GetBlock retorna um ponteiro para BlockDetail com todas as informações.
+		// GetBlock returns a pointer to a BlockDetail with all the information.
 		block, err := database.GetBlock(name)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Erro: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
 
-		// Exibimos as informações básicas do bloco.
-		fmt.Printf("Bloco: %s\n", block.Name)
-		fmt.Printf("Criado em: %s\n", block.CreatedAt)
+		// Show the block's basic information.
+		fmt.Printf("Block: %s\n", block.Name)
+		fmt.Printf("Created at: %s\n", block.CreatedAt)
 
-		// Montamos a linha de status baseada nos campos Active e Locked.
-		// Um bloco pode estar:
-		//   - Inativo (não está na tabela active_blocks)
-		//   - Ativo (está ativo, mas sem trava)
-		//   - Ativo e Travado (precisa digitar N caracteres para destravar)
+		// Build the status line based on the Active and Locked fields.
+		// A block can be:
+		//   - Inactive (not in the active_blocks table)
+		//   - Active (active, but not locked)
+		//   - Active and Locked (must type N characters to unlock)
 		if block.Active {
 			if block.Locked {
-				// Quando travado, mostramos quantos caracteres são necessários
-				// para destravar. Isso informa o nível de "atrito" configurado.
-				fmt.Printf("Status: Ativo (Travado - %d caracteres)\n", block.LockChars)
+				// When locked, show how many characters are needed to unlock.
+				// This tells the user the configured level of "friction".
+				fmt.Printf("Status: Active (Locked - %d characters)\n", block.LockChars)
 			} else {
-				fmt.Printf("Status: Ativo\n")
+				fmt.Printf("Status: Active\n")
 			}
 		} else {
-			fmt.Printf("Status: Inativo\n")
+			fmt.Printf("Status: Inactive\n")
 		}
 
-		// Exibimos a lista de sites bloqueados.
-		// Separamos com uma linha em branco para melhorar a legibilidade.
+		// Show the list of blocked sites.
+		// Separate with a blank line to improve readability.
 		fmt.Println()
 		if len(block.Sites) > 0 {
-			fmt.Println("Sites bloqueados:")
+			fmt.Println("Blocked sites:")
 			for _, site := range block.Sites {
 				fmt.Printf("  - %s\n", site)
 			}
 		} else {
-			fmt.Println("Sites bloqueados: nenhum")
+			fmt.Println("Blocked sites: none")
 		}
 
-		// Exibimos a lista de aplicativos bloqueados.
+		// Show the list of blocked applications.
 		fmt.Println()
 		if len(block.Apps) > 0 {
-			fmt.Println("Aplicativos bloqueados:")
+			fmt.Println("Blocked applications:")
 			for _, app := range block.Apps {
 				fmt.Printf("  - %s\n", app)
 			}
 		} else {
-			fmt.Println("Aplicativos bloqueados: nenhum")
+			fmt.Println("Blocked applications: none")
 		}
 	},
 }
 
 // --------------------------------------------------------------------------
-// Subcomando: block remove
+// Subcommand: block remove
 // --------------------------------------------------------------------------
 
-// blockRemoveCmd remove um bloco pelo nome.
-// Se o bloco estiver ativo, a remoção é impedida pelo banco de dados —
-// o usuário precisa desativar o bloco antes de removê-lo.
+// blockRemoveCmd removes a block by name.
+// If the block is active, the database prevents the removal —
+// the user must deactivate the block before removing it.
 //
-// Uso: open-turkey block remove redes-sociais
+// Usage: open-turkey block remove social-media
 var blockRemoveCmd = &cobra.Command{
-	Use:   "remove [nome]",
-	Short: "Remover um bloco",
+	Use:   "remove [name]",
+	Short: "Remove a block",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		name := args[0]
 
 		database, err := openDB()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Erro: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
 		defer database.Close()
 
 		if err := database.RemoveBlock(name); err != nil {
-			fmt.Fprintf(os.Stderr, "Erro: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
 
-		fmt.Printf("Bloco '%s' removido com sucesso.\n", name)
+		fmt.Printf("Block '%s' removed successfully.\n", name)
 	},
 }
 
 // --------------------------------------------------------------------------
-// Registro dos comandos (init)
+// Command registration (init)
 // --------------------------------------------------------------------------
 
-// init() é uma função especial do Go que roda automaticamente quando o pacote
-// é importado. Usamos ela para registrar os subcomandos na árvore de comandos
-// do Cobra. A ordem de registro não importa — o Cobra organiza tudo internamente.
+// init() is a special Go function that runs automatically when the package
+// is imported. We use it to register the subcommands in Cobra's command tree.
+// Registration order doesn't matter — Cobra organizes everything internally.
 //
-// Hierarquia resultante:
+// Resulting hierarchy:
 //   open-turkey (rootCmd)
 //   └── block (blockCmd)
 //       ├── create   (blockCreateCmd)
@@ -504,10 +506,10 @@ var blockRemoveCmd = &cobra.Command{
 //       ├── info     (blockInfoCmd)
 //       └── remove   (blockRemoveCmd)
 func init() {
-	// Adicionamos o comando "block" como filho do comando raiz.
+	// Add the "block" command as a child of the root command.
 	rootCmd.AddCommand(blockCmd)
 
-	// Adicionamos todos os subcomandos como filhos de "block".
+	// Add every subcommand as a child of "block".
 	blockCmd.AddCommand(blockCreateCmd)
 	blockCmd.AddCommand(blockAddSiteCmd)
 	blockCmd.AddCommand(blockRemoveSiteCmd)

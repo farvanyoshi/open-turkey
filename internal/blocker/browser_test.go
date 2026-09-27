@@ -5,157 +5,157 @@ import (
 	"testing"
 )
 
-// TestNormalizarDominio cobre a normalização de entradas variadas para o host
-// canônico que alimenta a geração de padrões de bloqueio. São casos de lógica
-// pura — sem I/O nem root — que valem para todos os navegadores, inclusive o
-// Brave, já que todos derivam dos mesmos padrões.
-func TestNormalizarDominio(t *testing.T) {
-	casos := []struct {
-		nome     string
-		entrada  string
-		esperado string
+// TestNormalizeDomain covers normalizing varied inputs into the canonical host
+// that feeds blocking-pattern generation. These are pure-logic cases — no I/O
+// or root — that apply to every browser, including Brave, since they all
+// derive from the same patterns.
+func TestNormalizeDomain(t *testing.T) {
+	cases := []struct {
+		name     string
+		input    string
+		expected string
 	}{
-		{"dominio simples", "facebook.com", "facebook.com"},
-		{"maiusculas viram minusculas", "Facebook.COM", "facebook.com"},
-		{"espacos em volta", "  facebook.com  ", "facebook.com"},
-		{"url completa extrai o host", "https://www.facebook.com/feed", "www.facebook.com"},
-		{"caminho sem scheme e descartado", "example.com/foo/bar", "example.com"},
-		{"porta e removida", "example.com:443", "example.com"},
-		{"url com porta extrai host sem a porta", "https://example.com:8080/x", "example.com"},
-		{"ponto final e removido", "example.com.", "example.com"},
-		{"string vazia", "", ""},
-		{"apenas espacos", "   ", ""},
+		{"simple domain", "facebook.com", "facebook.com"},
+		{"uppercase becomes lowercase", "Facebook.COM", "facebook.com"},
+		{"surrounding spaces", "  facebook.com  ", "facebook.com"},
+		{"full url extracts the host", "https://www.facebook.com/feed", "www.facebook.com"},
+		{"path without scheme is discarded", "example.com/foo/bar", "example.com"},
+		{"port is removed", "example.com:443", "example.com"},
+		{"url with port extracts host without the port", "https://example.com:8080/x", "example.com"},
+		{"trailing dot is removed", "example.com.", "example.com"},
+		{"empty string", "", ""},
+		{"only spaces", "   ", ""},
 	}
 
-	for _, c := range casos {
-		t.Run(c.nome, func(t *testing.T) {
-			obtido := NormalizarDominio(c.entrada)
-			if obtido != c.esperado {
-				t.Errorf("NormalizarDominio(%q) = %q; esperado %q", c.entrada, obtido, c.esperado)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := NormalizeDomain(c.input)
+			if got != c.expected {
+				t.Errorf("NormalizeDomain(%q) = %q; expected %q", c.input, got, c.expected)
 			}
 		})
 	}
 }
 
-// TestGerarPadroesFirefox valida os match-patterns *://.../* do WebsiteFilter
-// do Firefox: os dois padrões por domínio (raiz e wildcard de subdomínio), o
-// colapso do prefixo "www.", a deduplicação e o resultado ordenado.
-func TestGerarPadroesFirefox(t *testing.T) {
-	casos := []struct {
-		nome     string
-		dominios []string
-		esperado []string
+// TestFirefoxPatterns validates the *://.../* match patterns for Firefox's
+// WebsiteFilter: the two patterns per domain (root and subdomain wildcard),
+// collapsing the "www." prefix, deduplication and sorted output.
+func TestFirefoxPatterns(t *testing.T) {
+	cases := []struct {
+		name     string
+		domains  []string
+		expected []string
 	}{
 		{
-			nome:     "dominio raiz gera os dois padroes",
-			dominios: []string{"facebook.com"},
-			esperado: []string{"*://*.facebook.com/*", "*://facebook.com/*"},
+			name:     "root domain generates both patterns",
+			domains:  []string{"facebook.com"},
+			expected: []string{"*://*.facebook.com/*", "*://facebook.com/*"},
 		},
 		{
-			nome:     "prefixo www colapsa no wildcard sem www",
-			dominios: []string{"www.facebook.com"},
-			esperado: []string{"*://*.facebook.com/*", "*://www.facebook.com/*"},
+			name:     "www prefix collapses into wildcard without www",
+			domains:  []string{"www.facebook.com"},
+			expected: []string{"*://*.facebook.com/*", "*://www.facebook.com/*"},
 		},
 		{
-			nome:     "raiz e www compartilham e deduplicam o wildcard",
-			dominios: []string{"facebook.com", "www.facebook.com"},
-			esperado: []string{"*://*.facebook.com/*", "*://facebook.com/*", "*://www.facebook.com/*"},
+			name:     "root and www share and deduplicate the wildcard",
+			domains:  []string{"facebook.com", "www.facebook.com"},
+			expected: []string{"*://*.facebook.com/*", "*://facebook.com/*", "*://www.facebook.com/*"},
 		},
 		{
-			nome:     "dominio repetido nao duplica padroes",
-			dominios: []string{"facebook.com", "facebook.com"},
-			esperado: []string{"*://*.facebook.com/*", "*://facebook.com/*"},
+			name:     "repeated domain does not duplicate patterns",
+			domains:  []string{"facebook.com", "facebook.com"},
+			expected: []string{"*://*.facebook.com/*", "*://facebook.com/*"},
 		},
 		{
-			nome:     "www em dominio de label unico nao vira curinga do TLD",
-			dominios: []string{"www.com"},
-			esperado: []string{"*://*.www.com/*", "*://www.com/*"},
+			name:     "www on single-label domain does not become a TLD wildcard",
+			domains:  []string{"www.com"},
+			expected: []string{"*://*.www.com/*", "*://www.com/*"},
 		},
 		{
-			nome:     "entradas vazias sao ignoradas",
-			dominios: []string{"", "   "},
-			esperado: []string{},
+			name:     "empty entries are ignored",
+			domains:  []string{"", "   "},
+			expected: []string{},
 		},
 		{
-			nome:     "sem dominios resulta em lista vazia",
-			dominios: nil,
-			esperado: []string{},
+			name:     "no domains results in empty list",
+			domains:  nil,
+			expected: []string{},
 		},
 	}
 
-	for _, c := range casos {
-		t.Run(c.nome, func(t *testing.T) {
-			obtido := gerarPadroesFirefox(c.dominios)
-			if !reflect.DeepEqual(obtido, c.esperado) {
-				t.Errorf("gerarPadroesFirefox(%v) = %v; esperado %v", c.dominios, obtido, c.esperado)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := firefoxPatterns(c.domains)
+			if !reflect.DeepEqual(got, c.expected) {
+				t.Errorf("firefoxPatterns(%v) = %v; expected %v", c.domains, got, c.expected)
 			}
 		})
 	}
 }
 
-// TestGerarFiltrosChromium valida os filtros do URLBlocklist (Chromium/Chrome/
-// Brave): um filtro bare por domínio, prefixo "www." removido, deduplicação e
-// ordenação. O caso "uol.com.br" é o de regressão do bug que deixava a Folha
-// (folha.uol.com.br, subdomínio) passar — o filtro bare "uol.com.br" cobre
-// todos os subdomínios no navegador, sem precisar de curinga.
-func TestGerarFiltrosChromium(t *testing.T) {
-	casos := []struct {
-		nome     string
-		dominios []string
-		esperado []string
+// TestChromiumFilters validates the URLBlocklist filters (Chromium/Chrome/
+// Brave): one bare filter per domain, "www." prefix removed, deduplication and
+// sorting. The "uol.com.br" case is the regression test for the bug that let
+// Folha (folha.uol.com.br, a subdomain) through — the bare "uol.com.br" filter
+// covers every subdomain in the browser, no wildcard needed.
+func TestChromiumFilters(t *testing.T) {
+	cases := []struct {
+		name     string
+		domains  []string
+		expected []string
 	}{
 		{
-			nome:     "dominio raiz vira filtro bare",
-			dominios: []string{"facebook.com"},
-			esperado: []string{"facebook.com"},
+			name:     "root domain becomes bare filter",
+			domains:  []string{"facebook.com"},
+			expected: []string{"facebook.com"},
 		},
 		{
-			nome:     "prefixo www e removido (bare cobre subdominios)",
-			dominios: []string{"www.facebook.com"},
-			esperado: []string{"facebook.com"},
+			name:     "www prefix is removed (bare covers subdomains)",
+			domains:  []string{"www.facebook.com"},
+			expected: []string{"facebook.com"},
 		},
 		{
-			nome:     "raiz e www deduplicam no mesmo filtro bare",
-			dominios: []string{"facebook.com", "www.facebook.com"},
-			esperado: []string{"facebook.com"},
+			name:     "root and www deduplicate into the same bare filter",
+			domains:  []string{"facebook.com", "www.facebook.com"},
+			expected: []string{"facebook.com"},
 		},
 		{
-			nome:     "regressao folha: bloquear uol.com.br cobre o subdominio",
-			dominios: []string{"uol.com.br"},
-			esperado: []string{"uol.com.br"},
+			name:     "folha regression: blocking uol.com.br covers the subdomain",
+			domains:  []string{"uol.com.br"},
+			expected: []string{"uol.com.br"},
 		},
 		{
-			nome:     "url completa e normalizada para o host bare",
-			dominios: []string{"https://www.uol.com.br/folha"},
-			esperado: []string{"uol.com.br"},
+			name:     "full url is normalized to the bare host",
+			domains:  []string{"https://www.uol.com.br/folha"},
+			expected: []string{"uol.com.br"},
 		},
 		{
-			nome:     "www em dominio de label unico nao vira o TLD inteiro",
-			dominios: []string{"www.com"},
-			esperado: []string{"www.com"},
+			name:     "www on single-label domain does not become the whole TLD",
+			domains:  []string{"www.com"},
+			expected: []string{"www.com"},
 		},
 		{
-			nome:     "varios dominios saem ordenados",
-			dominios: []string{"reddit.com", "globo.com"},
-			esperado: []string{"globo.com", "reddit.com"},
+			name:     "multiple domains come out sorted",
+			domains:  []string{"reddit.com", "globo.com"},
+			expected: []string{"globo.com", "reddit.com"},
 		},
 		{
-			nome:     "entradas vazias sao ignoradas",
-			dominios: []string{"", "   "},
-			esperado: []string{},
+			name:     "empty entries are ignored",
+			domains:  []string{"", "   "},
+			expected: []string{},
 		},
 		{
-			nome:     "sem dominios resulta em lista vazia",
-			dominios: nil,
-			esperado: []string{},
+			name:     "no domains results in empty list",
+			domains:  nil,
+			expected: []string{},
 		},
 	}
 
-	for _, c := range casos {
-		t.Run(c.nome, func(t *testing.T) {
-			obtido := gerarFiltrosChromium(c.dominios)
-			if !reflect.DeepEqual(obtido, c.esperado) {
-				t.Errorf("gerarFiltrosChromium(%v) = %v; esperado %v", c.dominios, obtido, c.esperado)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := chromiumFilters(c.domains)
+			if !reflect.DeepEqual(got, c.expected) {
+				t.Errorf("chromiumFilters(%v) = %v; expected %v", c.domains, got, c.expected)
 			}
 		})
 	}

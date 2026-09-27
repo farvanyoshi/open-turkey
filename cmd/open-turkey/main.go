@@ -1,32 +1,31 @@
-// Package main é o ponto de entrada do Open Turkey — um bloqueador de
-// produtividade para Linux via linha de comando (CLI).
+// Package main is the entry point of Open Turkey — a command-line
+// productivity blocker for Linux.
 //
-// Por que o main.go é tão enxuto?
-// ---------------------------------
-// Seguimos o princípio de separação de responsabilidades (separation of
-// concerns). O papel do main.go é exclusivamente inicializar a aplicação.
-// Toda a lógica de comandos, flags e execução fica dentro dos pacotes
-// internos (internal/), o que traz algumas vantagens:
+// Why is main.go so lean?
+// -----------------------
+// We follow the principle of separation of concerns. main.go's only job is
+// to initialize the application. All the command, flag and execution logic
+// lives inside the internal packages (internal/), which has a few advantages:
 //
-//   - Testabilidade: pacotes internos podem ser testados de forma isolada,
-//     sem precisar executar o binário inteiro.
-//   - Organização: cada pacote cuida de uma única responsabilidade.
-//   - Encapsulamento: o diretório internal/ garante que outros módulos
-//     externos não importem nossa lógica interna por acidente.
+//   - Testability: internal packages can be tested in isolation,
+//     without having to run the whole binary.
+//   - Organization: each package handles a single responsibility.
+//   - Encapsulation: the internal/ directory ensures other external modules
+//     don't import our internal logic by accident.
 //
-// A função main() apenas delega a execução para cli.Execute(), que é
-// responsável por configurar e rodar o comando raiz (root command) usando
-// o padrão Cobra.
+// The main() function just delegates execution to cli.Execute(), which is
+// responsible for configuring and running the root command using the Cobra
+// pattern.
 package main
 
 import (
 	"github.com/brunodcdo/open-turkey/internal/cli"
 )
 
-// main é o ponto de entrada da aplicação. Chamamos cli.Execute() que
-// inicializa o comando raiz do Cobra e processa os argumentos da linha
-// de comando. Se houver algum erro, o próprio Cobra cuida de exibir a
-// mensagem de erro e encerrar o processo com código de saída apropriado.
+// main is the application's entry point. We call cli.Execute(), which
+// initializes Cobra's root command and processes the command-line arguments.
+// If there's an error, Cobra itself takes care of showing the error message
+// and exiting the process with the appropriate exit code.
 func main() {
 	cli.Execute()
 }

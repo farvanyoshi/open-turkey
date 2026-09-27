@@ -1,41 +1,41 @@
-// daemon.go — Comando para iniciar o daemon do Open Turkey.
+// daemon.go — Command to start the Open Turkey daemon.
 //
-// O QUE É UM DAEMON?
-// -------------------
-// Um daemon (pronuncia-se "dimon") é um programa que roda em segundo plano
-// no Linux, sem interação direta com o usuário. Pense nele como um "vigia"
-// que fica acordado o tempo todo, mesmo quando ninguém está olhando.
+// WHAT IS A DAEMON?
+// -----------------
+// A daemon is a program that runs in the background on Linux, without direct
+// interaction with the user. Think of it as a "watchman" that stays awake all
+// the time, even when nobody is looking.
 //
-// Exemplos famosos de daemons no Linux:
-//   - sshd: daemon do SSH (permite conexões remotas)
-//   - nginx: daemon do servidor web
-//   - systemd: o "gerente" de todos os outros daemons
+// Well-known examples of daemons on Linux:
+//   - sshd: the SSH daemon (allows remote connections)
+//   - nginx: the web server daemon
+//   - systemd: the "manager" of every other daemon
 //
-// POR QUE O OPEN TURKEY PRECISA DE UM DAEMON?
-// --------------------------------------------
-// Sem um daemon, o bloqueio seria facilmente burlável. O usuário poderia:
-//   - Editar o /etc/hosts manualmente para remover nossos bloqueios
-//   - Limpar as regras do iptables com "iptables -F"
-//   - Deletar os arquivos de política dos navegadores
-//   - Simplesmente reiniciar o computador para limpar tudo
+// WHY DOES OPEN TURKEY NEED A DAEMON?
+// -----------------------------------
+// Without a daemon, the block would be easy to get around. The user could:
+//   - Manually edit /etc/hosts to remove our blocks
+//   - Flush the iptables rules with "iptables -F"
+//   - Delete the browser policy files
+//   - Simply reboot the computer to wipe everything
 //
-// O daemon monitora continuamente todos esses pontos e reaplicar os bloqueios
-// se detectar que alguém (ou alguma atualização do sistema) os removeu.
-// É como um segurança que fica rondando 24h e tranca de novo qualquer
-// porta que alguém tente abrir.
+// The daemon continuously monitors all these points and reapplies the blocks
+// if it detects that someone (or some system update) removed them.
+// It's like a security guard doing rounds 24/7 and relocking any door someone
+// tries to open.
 //
-// COMO EXECUTAR?
-// --------------
-// Este comando normalmente NÃO é chamado diretamente pelo usuário.
-// Ele é executado pelo systemd (o gerenciador de serviços do Linux)
-// através de um arquivo de unidade (unit file) em /etc/systemd/system/.
+// HOW DO I RUN IT?
+// ----------------
+// This command is normally NOT called directly by the user.
+// It's run by systemd (the Linux service manager) through a unit file in
+// /etc/systemd/system/.
 //
-// Exemplo de uso manual (para debug):
+// Manual usage example (for debugging):
 //   sudo open-turkey daemon
 //
-// Uso via systemd (o jeito correto):
+// Usage via systemd (the right way):
 //   sudo systemctl start open-turkey
-//   sudo systemctl enable open-turkey   # inicia automaticamente no boot
+//   sudo systemctl enable open-turkey   # starts automatically at boot
 package cli
 
 import (
@@ -43,35 +43,35 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// daemonCmd inicia o daemon do Open Turkey.
+// daemonCmd starts the Open Turkey daemon.
 //
-// O daemon roda em loop infinito, monitorando e reaplicando os bloqueios.
-// Ele só para quando recebe um sinal de encerramento (SIGTERM/SIGINT)
-// ou quando o processo é morto externamente.
+// The daemon runs in an infinite loop, monitoring and reapplying the blocks.
+// It only stops when it receives a shutdown signal (SIGTERM/SIGINT)
+// or when the process is killed externally.
 //
-// Toda a lógica do daemon fica no pacote "internal/daemon", mantendo
-// este arquivo enxuto. O papel deste comando é apenas servir de "ponte"
-// entre o Cobra (framework de CLI) e o pacote daemon.
+// All the daemon logic lives in the "internal/daemon" package, keeping this
+// file lean. This command's role is just to act as a "bridge" between Cobra
+// (the CLI framework) and the daemon package.
 var daemonCmd = &cobra.Command{
 	Use:   "daemon",
-	Short: "Iniciar o daemon do Open Turkey (use via systemd)",
+	Short: "Start the Open Turkey daemon (use via systemd)",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// daemon.Run() inicia o loop principal do daemon.
-		// Esta chamada é BLOQUEANTE — ela só retorna quando o daemon
-		// é encerrado (por sinal ou erro fatal). Enquanto o daemon
-		// estiver rodando, a execução fica "presa" aqui dentro.
+		// daemon.Run() starts the daemon's main loop.
+		// This call is BLOCKING — it only returns when the daemon shuts down
+		// (by signal or fatal error). While the daemon is running, execution
+		// stays "stuck" in here.
 		return daemon.Run()
 	},
 }
 
-// init() registra o comando daemon como filho do rootCmd.
+// init() registers the daemon command as a child of rootCmd.
 //
-// Após este registro, o usuário pode executar:
+// After this registration, the user can run:
 //   open-turkey daemon
 //
-// O Go chama init() automaticamente quando o pacote é carregado.
-// Como todos os arquivos do pacote "cli" são carregados juntos,
-// cada arquivo pode ter seu próprio init() e todos serão executados.
+// Go calls init() automatically when the package is loaded.
+// Since every file in the "cli" package is loaded together,
+// each file can have its own init() and all of them will run.
 func init() {
 	rootCmd.AddCommand(daemonCmd)
 }

@@ -1,14 +1,15 @@
-// Package cli define os comandos de linha de comando do Open Turkey usando Cobra.
+// Package cli defines Open Turkey's command-line commands using Cobra.
 //
-// O Cobra é uma biblioteca popular em Go para criar CLIs. Ele organiza a aplicação
-// em "comandos" (commands) que podem ter subcomandos, flags e argumentos.
-// Por exemplo: "open-turkey block create redes-sociais" tem:
-//   - "open-turkey" como comando raiz (root)
-//   - "block" como subcomando
-//   - "create" como sub-subcomando
-//   - "redes-sociais" como argumento
+// Cobra is a popular Go library for building CLIs. It organizes the
+// application into "commands" that can have subcommands, flags and arguments.
+// For example: "open-turkey block create social-media" has:
+//   - "open-turkey" as the root command
+//   - "block" as a subcommand
+//   - "create" as a sub-subcommand
+//   - "social-media" as an argument
 //
-// Este arquivo define o comando raiz e a função Execute() que inicia tudo.
+// This file defines the root command and the Execute() function that starts
+// everything.
 package cli
 
 import (
@@ -18,21 +19,22 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// rootCmd é o comando raiz da aplicação. Todos os outros comandos (block, session, etc.)
-// são adicionados como filhos deste comando. Quando o usuário digita "open-turkey"
-// sem argumentos, o Cobra exibe a ajuda deste comando automaticamente.
+// rootCmd is the application's root command. Every other command (block,
+// start, etc.) is added as a child of this command. When the user types
+// "open-turkey" with no arguments, Cobra shows this command's help
+// automatically.
 var rootCmd = &cobra.Command{
 	Use:   "open-turkey",
-	Short: "Bloqueador de produtividade para Linux via linha de comando",
+	Short: "A command-line productivity blocker for Linux",
 }
 
-// Execute inicializa e executa o comando raiz do Cobra.
-// Esta função é chamada pelo main.go — é o ponto de entrada da CLI.
-// Se qualquer comando retornar erro, imprimimos a mensagem no stderr
-// e encerramos o processo com código de saída 1.
+// Execute initializes and runs Cobra's root command.
+// This function is called by main.go — it's the CLI's entry point.
+// If any command returns an error, we print the message to stderr
+// and exit the process with exit code 1.
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
-		fmt.Fprintf(os.Stderr, "Erro: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 }

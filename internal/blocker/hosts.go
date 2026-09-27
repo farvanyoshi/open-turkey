@@ -1,41 +1,42 @@
-// Package blocker implementa o bloqueio de sites no nível do sistema operacional.
+// Package blocker implements site blocking at the operating system level.
 //
-// COMO FUNCIONA O BLOQUEIO VIA /etc/hosts:
+// HOW BLOCKING VIA /etc/hosts WORKS:
 //
-// Quando você digita "facebook.com" no navegador, o sistema operacional precisa
-// descobrir o endereço IP real daquele servidor (ex: 157.240.1.35). Para isso,
-// ele faz uma "consulta DNS" — basicamente pergunta a um servidor de nomes
-// "qual é o IP de facebook.com?".
+// When you type "facebook.com" into the browser, the operating system needs to
+// find out the real IP address of that server (e.g. 157.240.1.35). To do that,
+// it makes a "DNS query" — basically asking a name server "what's the IP of
+// facebook.com?".
 //
-// MAS, antes de fazer essa consulta na internet, o Linux SEMPRE verifica primeiro
-// o arquivo /etc/hosts. Esse arquivo funciona como uma "lista telefônica local":
-// se o domínio está lá, o sistema usa o IP definido no arquivo e NEM CONSULTA
-// o DNS externo.
+// BUT, before making that query on the internet, Linux ALWAYS checks the
+// /etc/hosts file first. That file works like a "local phone book": if the
+// domain is there, the system uses the IP defined in the file and does NOT
+// even query external DNS.
 //
-// O truque é simples: mapeamos os domínios que queremos bloquear para o endereço
-// 0.0.0.0 (um endereço inválido/inexistente). Quando o navegador tenta acessar
-// o site, ele recebe esse IP falso e a conexão falha imediatamente.
+// The trick is simple: we map the domains we want to block to the address
+// 0.0.0.0 (an invalid/nonexistent address). When the browser tries to reach
+// the site, it gets this fake IP and the connection fails immediately.
 //
-// POR QUE 0.0.0.0 E NÃO 127.0.0.1?
-// O 127.0.0.1 (localhost) pode ter um servidor web rodando e mostraria uma página
-// de erro confusa. O 0.0.0.0 simplesmente não existe como destino — a conexão
-// falha instantaneamente, sem espera. É mais rápido e mais limpo.
+// WHY 0.0.0.0 AND NOT 127.0.0.1?
+// 127.0.0.1 (localhost) may have a web server running and would show a
+// confusing error page. 0.0.0.0 simply doesn't exist as a destination — the
+// connection fails instantly, without waiting. It's faster and cleaner.
 //
-// IMPORTANTE: Esse bloqueio afeta TODOS os programas do computador, não apenas
-// o navegador. Apps, clientes de email, qualquer coisa que use DNS será bloqueada.
-// Por isso é um método tão eficaz — não dá pra burlar trocando de navegador.
+// IMPORTANT: This block affects EVERY program on the computer, not just the
+// browser. Apps, email clients, anything that uses DNS will be blocked.
+// That's why it's such an effective method — you can't get around it by
+// switching browsers.
 //
-// COMO GERENCIAMOS NOSSA SEÇÃO:
-// Para não bagunçar as entradas originais do /etc/hosts (que podem incluir
-// configurações importantes do sistema), usamos marcadores especiais:
+// HOW WE MANAGE OUR SECTION:
+// To avoid messing up the original /etc/hosts entries (which may include
+// important system settings), we use special markers:
 //
 //	# BEGIN OPEN-TURKEY
 //	0.0.0.0 facebook.com
 //	0.0.0.0 www.facebook.com
 //	# END OPEN-TURKEY
 //
-// Assim, quando precisamos remover o bloqueio, sabemos exatamente quais linhas
-// são nossas e quais são do sistema. Nunca tocamos no que está fora dos marcadores.
+// That way, when we need to remove the block, we know exactly which lines are
+// ours and which are the system's. We never touch anything outside the markers.
 package blocker
 
 import (
@@ -44,181 +45,181 @@ import (
 	"strings"
 )
 
-// hostsPath é o caminho do arquivo de hosts do Linux.
-// Esse arquivo existe em todo sistema Unix/Linux e é lido automaticamente
-// pelo sistema operacional antes de qualquer consulta DNS.
+// hostsPath is the path of the Linux hosts file.
+// This file exists on every Unix/Linux system and is read automatically by
+// the operating system before any DNS query.
 const hostsPath = "/etc/hosts"
 
-// beginMarker e endMarker delimitam a seção que o Open Turkey gerencia.
-// Tudo que estiver ENTRE essas duas linhas foi escrito por nós e pode
-// ser removido com segurança. Tudo FORA dessas linhas pertence ao sistema
-// e NUNCA deve ser alterado.
+// beginMarker and endMarker delimit the section Open Turkey manages.
+// Everything BETWEEN these two lines was written by us and can be safely
+// removed. Everything OUTSIDE these lines belongs to the system and must
+// NEVER be changed.
 const (
 	beginMarker = "# BEGIN OPEN-TURKEY"
 	endMarker   = "# END OPEN-TURKEY"
 )
 
-// ApplyHosts recebe uma lista de domínios e bloqueia todos eles no /etc/hosts.
+// ApplyHosts takes a list of domains and blocks all of them in /etc/hosts.
 //
-// O processo é:
-//  1. Lê o conteúdo atual do /etc/hosts (para preservar as entradas do sistema)
-//  2. Remove qualquer seção anterior do Open Turkey (evita duplicatas)
-//  3. Monta uma nova seção com todos os domínios apontando para 0.0.0.0
-//  4. Grava o arquivo de volta com as permissões corretas (0644)
+// The process is:
+//  1. Read the current contents of /etc/hosts (to preserve system entries)
+//  2. Remove any previous Open Turkey section (avoids duplicates)
+//  3. Build a new section with every domain pointing to 0.0.0.0
+//  4. Write the file back with the correct permissions (0644)
 //
-// Para cada domínio, adicionamos DUAS entradas:
-//   - 0.0.0.0 dominio.com       (versão sem www)
-//   - 0.0.0.0 www.dominio.com   (versão com www)
+// For each domain, we add TWO entries:
+//   - 0.0.0.0 domain.com       (version without www)
+//   - 0.0.0.0 www.domain.com   (version with www)
 //
-// Isso é necessário porque "facebook.com" e "www.facebook.com" são tratados
-// como domínios DIFERENTES pelo sistema. Se bloqueássemos só um, o usuário
-// poderia acessar pelo outro.
+// This is needed because "facebook.com" and "www.facebook.com" are treated as
+// DIFFERENT domains by the system. If we only blocked one, the user could get
+// in through the other.
 func ApplyHosts(domains []string) error {
-	// Passo 1: Ler o conteúdo atual do /etc/hosts.
-	// Precisamos preservar tudo que já existe (entradas do sistema como
-	// "127.0.0.1 localhost") e apenas adicionar/atualizar nossa seção.
-	conteudo, err := os.ReadFile(hostsPath)
+	// Step 1: Read the current contents of /etc/hosts.
+	// We need to preserve everything that already exists (system entries like
+	// "127.0.0.1 localhost") and only add/update our section.
+	content, err := os.ReadFile(hostsPath)
 	if err != nil {
-		return fmt.Errorf("erro ao ler o arquivo %s: %w", hostsPath, err)
+		return fmt.Errorf("failed to read file %s: %w", hostsPath, err)
 	}
 
-	// Passo 2: Remover qualquer seção anterior do Open Turkey.
-	// Isso garante que não teremos entradas duplicadas caso o usuário
-	// mude a lista de sites bloqueados.
-	conteudoLimpo := removerSecaoOpenTurkey(string(conteudo))
+	// Step 2: Remove any previous Open Turkey section.
+	// This ensures we won't have duplicate entries if the user changes the
+	// list of blocked sites.
+	cleanContent := removeOpenTurkeySection(string(content))
 
-	// Passo 3: Montar a nova seção com os domínios bloqueados.
-	// Cada domínio ganha duas linhas: uma com e outra sem "www.".
-	var secao strings.Builder
-	secao.WriteString(beginMarker + "\n")
+	// Step 3: Build the new section with the blocked domains.
+	// Each domain gets two lines: one with and one without "www.".
+	var section strings.Builder
+	section.WriteString(beginMarker + "\n")
 
-	for _, dominio := range domains {
-		// Normaliza entradas do tipo "https://exemplo.com/" ou "exemplo.com/".
-		dominio = NormalizarDominio(dominio)
-		if dominio == "" {
+	for _, domain := range domains {
+		// Normalize entries like "https://example.com/" or "example.com/".
+		domain = NormalizeDomain(domain)
+		if domain == "" {
 			continue
 		}
 
-		// Sempre adicionamos o domínio como foi informado
-		secao.WriteString(fmt.Sprintf("0.0.0.0 %s\n", dominio))
+		// Always add the domain as given
+		section.WriteString(fmt.Sprintf("0.0.0.0 %s\n", domain))
 
-		// Agora tratamos a versão com/sem "www.":
-		// Se o domínio JÁ começa com "www.", adicionamos também sem o "www."
-		// Se NÃO começa com "www.", adicionamos a versão com "www."
-		// Isso evita duplicar "www." (ex: "www.www.facebook.com")
-		if strings.HasPrefix(dominio, "www.") {
-			// O usuário passou "www.facebook.com", então adicionamos "facebook.com"
-			semWWW := strings.TrimPrefix(dominio, "www.")
-			secao.WriteString(fmt.Sprintf("0.0.0.0 %s\n", semWWW))
+		// Now handle the version with/without "www.":
+		// If the domain ALREADY starts with "www.", also add it without "www."
+		// If it does NOT start with "www.", add the version with "www."
+		// This avoids doubling "www." (e.g. "www.www.facebook.com")
+		if strings.HasPrefix(domain, "www.") {
+			// The user passed "www.facebook.com", so we add "facebook.com"
+			withoutWWW := strings.TrimPrefix(domain, "www.")
+			section.WriteString(fmt.Sprintf("0.0.0.0 %s\n", withoutWWW))
 		} else {
-			// O usuário passou "facebook.com", então adicionamos "www.facebook.com"
-			secao.WriteString(fmt.Sprintf("0.0.0.0 www.%s\n", dominio))
+			// The user passed "facebook.com", so we add "www.facebook.com"
+			section.WriteString(fmt.Sprintf("0.0.0.0 www.%s\n", domain))
 		}
 	}
 
-	secao.WriteString(endMarker + "\n")
+	section.WriteString(endMarker + "\n")
 
-	// Passo 4: Juntar o conteúdo original (sem nossa seção antiga) com a nova seção.
-	// Garantimos que há uma quebra de linha entre o conteúdo existente e nossa seção
-	// para manter o arquivo organizado e legível.
-	conteudoFinal := conteudoLimpo
-	if !strings.HasSuffix(conteudoFinal, "\n") && conteudoFinal != "" {
-		conteudoFinal += "\n"
+	// Step 4: Join the original content (without our old section) with the new section.
+	// We make sure there's a newline between the existing content and our
+	// section to keep the file organized and readable.
+	finalContent := cleanContent
+	if !strings.HasSuffix(finalContent, "\n") && finalContent != "" {
+		finalContent += "\n"
 	}
-	conteudoFinal += secao.String()
+	finalContent += section.String()
 
-	// Passo 5: Gravar o arquivo de volta.
-	// Permissão 0644 significa:
-	//   - Dono (root): pode ler e escrever (6 = 4+2)
-	//   - Grupo: pode apenas ler (4)
-	//   - Outros: pode apenas ler (4)
-	// Essa é a permissão padrão do /etc/hosts na maioria das distribuições Linux.
-	if err := os.WriteFile(hostsPath, []byte(conteudoFinal), 0644); err != nil {
-		return fmt.Errorf("erro ao gravar o arquivo %s: %w", hostsPath, err)
+	// Step 5: Write the file back.
+	// Permission 0644 means:
+	//   - Owner (root): can read and write (6 = 4+2)
+	//   - Group: can only read (4)
+	//   - Others: can only read (4)
+	// This is the default /etc/hosts permission on most Linux distributions.
+	if err := os.WriteFile(hostsPath, []byte(finalContent), 0644); err != nil {
+		return fmt.Errorf("failed to write file %s: %w", hostsPath, err)
 	}
 
 	return nil
 }
 
-// RemoveHosts remove todos os bloqueios do Open Turkey do arquivo /etc/hosts.
+// RemoveHosts removes every Open Turkey block from the /etc/hosts file.
 //
-// Essa função é chamada quando o período de bloqueio termina ou quando o
-// usuário desativa o bloqueador. Ela remove APENAS as linhas entre nossos
-// marcadores, preservando todo o restante do arquivo.
+// This function is called when the block period ends or when the user
+// disables the blocker. It removes ONLY the lines between our markers,
+// preserving the rest of the file.
 func RemoveHosts() error {
-	// Passo 1: Ler o conteúdo atual.
-	conteudo, err := os.ReadFile(hostsPath)
+	// Step 1: Read the current contents.
+	content, err := os.ReadFile(hostsPath)
 	if err != nil {
-		return fmt.Errorf("erro ao ler o arquivo %s: %w", hostsPath, err)
+		return fmt.Errorf("failed to read file %s: %w", hostsPath, err)
 	}
 
-	// Passo 2: Remover a seção do Open Turkey.
-	conteudoLimpo := removerSecaoOpenTurkey(string(conteudo))
+	// Step 2: Remove the Open Turkey section.
+	cleanContent := removeOpenTurkeySection(string(content))
 
-	// Passo 3: Gravar o arquivo de volta sem nossa seção.
-	if err := os.WriteFile(hostsPath, []byte(conteudoLimpo), 0644); err != nil {
-		return fmt.Errorf("erro ao gravar o arquivo %s: %w", hostsPath, err)
+	// Step 3: Write the file back without our section.
+	if err := os.WriteFile(hostsPath, []byte(cleanContent), 0644); err != nil {
+		return fmt.Errorf("failed to write file %s: %w", hostsPath, err)
 	}
 
 	return nil
 }
 
-// IsHostsApplied verifica se TODOS os domínios da lista estão bloqueados no /etc/hosts.
+// IsHostsApplied checks whether ALL the domains in the list are blocked in /etc/hosts.
 //
-// Retorna true SOMENTE se:
-//  1. Os marcadores BEGIN/END do Open Turkey existem no arquivo
-//  2. TODOS os domínios esperados estão presentes na seção (tanto com quanto sem "www.")
+// Returns true ONLY if:
+//  1. Open Turkey's BEGIN/END markers exist in the file
+//  2. EVERY expected domain is present in the section (both with and without "www.")
 //
-// Se faltar QUALQUER domínio, retorna false. Isso é importante para detectar
-// se alguém editou manualmente o /etc/hosts tentando burlar o bloqueio.
+// If ANY domain is missing, it returns false. This matters for detecting
+// whether someone manually edited /etc/hosts trying to get around the block.
 func IsHostsApplied(domains []string) bool {
-	// Tentamos ler o arquivo. Se falhar (ex: sem permissão), consideramos
-	// que o bloqueio NÃO está aplicado, pois não temos como confirmar.
-	conteudo, err := os.ReadFile(hostsPath)
+	// Try to read the file. If it fails (e.g. no permission), we consider the
+	// block NOT applied, since we have no way to confirm it.
+	content, err := os.ReadFile(hostsPath)
 	if err != nil {
 		return false
 	}
 
-	texto := string(conteudo)
+	text := string(content)
 
-	// Verificação 1: Os marcadores existem?
-	// Se não existem, significa que o Open Turkey nunca escreveu nesse arquivo
-	// ou alguém removeu nossa seção manualmente.
-	if !strings.Contains(texto, beginMarker) || !strings.Contains(texto, endMarker) {
+	// Check 1: Do the markers exist?
+	// If not, Open Turkey never wrote to this file or someone manually
+	// removed our section.
+	if !strings.Contains(text, beginMarker) || !strings.Contains(text, endMarker) {
 		return false
 	}
 
-	// Verificação 2: Extrair apenas o conteúdo da nossa seção.
-	// Precisamos verificar os domínios DENTRO da seção, não no arquivo inteiro,
-	// porque o usuário pode ter entradas próprias com esses domínios fora da
-	// nossa seção (improvável, mas possível).
-	secao := extrairSecaoOpenTurkey(texto)
+	// Check 2: Extract only the contents of our section.
+	// We need to check the domains INSIDE the section, not in the whole file,
+	// because the user may have their own entries for these domains outside
+	// our section (unlikely, but possible).
+	section := extractOpenTurkeySection(text)
 
-	// Verificação 3: Cada domínio esperado está presente?
-	for _, dominio := range domains {
-		dominio = NormalizarDominio(dominio)
-		if dominio == "" {
+	// Check 3: Is every expected domain present?
+	for _, domain := range domains {
+		domain = NormalizeDomain(domain)
+		if domain == "" {
 			continue
 		}
 
-		// Verificamos se a linha "0.0.0.0 dominio" existe na seção.
-		// Usamos a linha completa para evitar falsos positivos
-		// (ex: "facebook.com.br" casando com "facebook.com").
-		entradaPrincipal := fmt.Sprintf("0.0.0.0 %s", dominio)
-		if !strings.Contains(secao, entradaPrincipal) {
+		// Check whether the line "0.0.0.0 domain" exists in the section.
+		// We use the full line to avoid false positives
+		// (e.g. "facebook.com.br" matching "facebook.com").
+		mainEntry := fmt.Sprintf("0.0.0.0 %s", domain)
+		if !strings.Contains(section, mainEntry) {
 			return false
 		}
 
-		// Verificamos também a versão alternativa (com ou sem www.)
-		if strings.HasPrefix(dominio, "www.") {
-			semWWW := strings.TrimPrefix(dominio, "www.")
-			entradaAlternativa := fmt.Sprintf("0.0.0.0 %s", semWWW)
-			if !strings.Contains(secao, entradaAlternativa) {
+		// Also check the alternate version (with or without www.)
+		if strings.HasPrefix(domain, "www.") {
+			withoutWWW := strings.TrimPrefix(domain, "www.")
+			altEntry := fmt.Sprintf("0.0.0.0 %s", withoutWWW)
+			if !strings.Contains(section, altEntry) {
 				return false
 			}
 		} else {
-			entradaComWWW := fmt.Sprintf("0.0.0.0 www.%s", dominio)
-			if !strings.Contains(secao, entradaComWWW) {
+			wwwEntry := fmt.Sprintf("0.0.0.0 www.%s", domain)
+			if !strings.Contains(section, wwwEntry) {
 				return false
 			}
 		}
@@ -227,80 +228,80 @@ func IsHostsApplied(domains []string) bool {
 	return true
 }
 
-// removerSecaoOpenTurkey remove tudo entre os marcadores BEGIN e END (inclusive).
+// removeOpenTurkeySection removes everything between the BEGIN and END markers (inclusive).
 //
-// Essa é uma função auxiliar usada tanto por ApplyHosts (para limpar antes de
-// reescrever) quanto por RemoveHosts (para remover o bloqueio).
+// This is a helper used both by ApplyHosts (to clean up before rewriting)
+// and by RemoveHosts (to remove the block).
 //
-// O algoritmo percorre o arquivo linha por linha:
-//   - Enquanto estiver FORA dos marcadores, mantém a linha
-//   - Quando encontra o BEGIN, começa a pular linhas
-//   - Quando encontra o END, para de pular (e pula o próprio END também)
-//   - Tudo que sobrou é o conteúdo original do sistema, intocado
-func removerSecaoOpenTurkey(conteudo string) string {
-	linhas := strings.Split(conteudo, "\n")
-	var resultado []string
+// The algorithm walks the file line by line:
+//   - While OUTSIDE the markers, keep the line
+//   - On finding BEGIN, start skipping lines
+//   - On finding END, stop skipping (and skip the END line itself too)
+//   - Whatever is left is the system's original content, untouched
+func removeOpenTurkeySection(content string) string {
+	lines := strings.Split(content, "\n")
+	var result []string
 
-	// dentroSecao funciona como uma "chave liga/desliga":
-	// false = estamos fora da seção do Open Turkey (manter a linha)
-	// true = estamos dentro da seção (pular a linha)
-	dentroSecao := false
+	// inSection works like an "on/off switch":
+	// false = we're outside the Open Turkey section (keep the line)
+	// true = we're inside the section (skip the line)
+	inSection := false
 
-	for _, linha := range linhas {
-		// Encontramos o início da nossa seção — a partir daqui, pulamos tudo
-		if strings.TrimSpace(linha) == beginMarker {
-			dentroSecao = true
+	for _, line := range lines {
+		// Found the start of our section — from here on, skip everything
+		if strings.TrimSpace(line) == beginMarker {
+			inSection = true
 			continue
 		}
 
-		// Encontramos o fim da nossa seção — voltamos a manter as linhas
-		if strings.TrimSpace(linha) == endMarker {
-			dentroSecao = false
+		// Found the end of our section — go back to keeping lines
+		if strings.TrimSpace(line) == endMarker {
+			inSection = false
 			continue
 		}
 
-		// Se estamos fora da seção, mantemos a linha normalmente
-		if !dentroSecao {
-			resultado = append(resultado, linha)
+		// If we're outside the section, keep the line as is
+		if !inSection {
+			result = append(result, line)
 		}
 	}
 
-	// Juntamos as linhas de volta em um texto único.
-	// Removemos linhas em branco extras do final para manter o arquivo limpo.
-	textoFinal := strings.Join(resultado, "\n")
-	textoFinal = strings.TrimRight(textoFinal, "\n")
+	// Join the lines back into a single text.
+	// Remove extra blank lines from the end to keep the file clean.
+	finalText := strings.Join(result, "\n")
+	finalText = strings.TrimRight(finalText, "\n")
 
-	// Se o arquivo original não estava vazio, garantimos que termina com
-	// uma quebra de linha (convenção Unix — arquivos de texto devem terminar
-	// com newline para que ferramentas como "cat" funcionem corretamente).
-	if textoFinal != "" {
-		textoFinal += "\n"
+	// If the original file wasn't empty, make sure it ends with a newline
+	// (Unix convention — text files should end with a newline so tools like
+	// "cat" work correctly).
+	if finalText != "" {
+		finalText += "\n"
 	}
 
-	return textoFinal
+	return finalText
 }
 
-// extrairSecaoOpenTurkey retorna apenas o conteúdo entre os marcadores.
+// extractOpenTurkeySection returns only the contents between the markers.
 //
-// Usada por IsHostsApplied para verificar quais domínios estão bloqueados
-// sem se confundir com entradas fora da nossa seção.
-func extrairSecaoOpenTurkey(conteudo string) string {
-	linhas := strings.Split(conteudo, "\n")
-	var secao []string
-	dentroSecao := false
+// Used by IsHostsApplied to check which domains are blocked without getting
+// confused by entries outside our section.
+func extractOpenTurkeySection(content string) string {
+	lines := strings.Split(content, "\n")
+	var section []string
+	inSection := false
 
-	for _, linha := range linhas {
-		if strings.TrimSpace(linha) == beginMarker {
-			dentroSecao = true
+	for _, line := range lines {
+		if strings.TrimSpace(line) == beginMarker {
+			inSection = true
 			continue
 		}
-		if strings.TrimSpace(linha) == endMarker {
-			break // Encontrou o fim, não precisa continuar
+		if strings.TrimSpace(line) == endMarker {
+			break // Found the end, no need to continue
 		}
-		if dentroSecao {
-			secao = append(secao, linha)
+		if inSection {
+			section = append(section, line)
 		}
 	}
 
-	return strings.Join(secao, "\n")
+	return strings.Join(section, "\n")
 }

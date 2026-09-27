@@ -1,5 +1,5 @@
-// Programa temporário para normalizar domínios existentes no banco de dados.
-// Corrige entradas como "https://polymarket.com/" → "polymarket.com".
+// Temporary program to normalize existing domains in the database.
+// Fixes entries like "https://polymarket.com/" → "polymarket.com".
 package main
 
 import (
@@ -13,27 +13,27 @@ import (
 func main() {
 	database, err := db.OpenDB(db.DefaultDBPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Erro ao abrir banco: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Failed to open database: %v\n", err)
 		os.Exit(1)
 	}
 	defer database.Close()
 
 	sites, err := database.GetAllSitesRaw()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Erro ao buscar sites: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Failed to fetch sites: %v\n", err)
 		os.Exit(1)
 	}
 
 	for _, s := range sites {
-		normalizado := blocker.NormalizarDominio(s.Domain)
-		if normalizado != s.Domain {
-			fmt.Printf("Normalizando: '%s' → '%s'\n", s.Domain, normalizado)
-			if err := database.UpdateSiteDomain(s.ID, normalizado); err != nil {
-				fmt.Fprintf(os.Stderr, "Erro ao atualizar site %d: %v\n", s.ID, err)
+		normalized := blocker.NormalizeDomain(s.Domain)
+		if normalized != s.Domain {
+			fmt.Printf("Normalizing: '%s' → '%s'\n", s.Domain, normalized)
+			if err := database.UpdateSiteDomain(s.ID, normalized); err != nil {
+				fmt.Fprintf(os.Stderr, "Failed to update site %d: %v\n", s.ID, err)
 				os.Exit(1)
 			}
 		}
 	}
 
-	fmt.Println("Domínios normalizados com sucesso.")
+	fmt.Println("Domains normalized successfully.")
 }
