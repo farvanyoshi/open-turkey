@@ -134,13 +134,13 @@ Show status:
 open-turkey status
 ```
 
-Deactivate (only if not locked):
+Deactivate (only if the block isn't held — see Concepts):
 
 ```bash
 open-turkey stop social-media
 ```
 
-Unlock a locked block (this also **deactivates** it):
+Unlock a character-locked block (this also **deactivates** it). Time locks and open schedule windows can't be unlocked — they lift on their own:
 
 ```bash
 open-turkey unlock social-media
@@ -157,7 +157,7 @@ open-turkey block remove-site social-media instagram.com
 Notes:
 
 - If the block is **active**, Open Turkey re-applies the layers so the change takes effect immediately.
-- If the block is **active and locked**, you **cannot** edit its sites/apps. Run `open-turkey unlock <block>` first (which deactivates it), make your changes, then activate again.
+- If the block is **held** (character-locked, time-locked, or in an open schedule window), you **cannot** edit its sites/apps/patterns. Clear the hold first (unlock, or wait for the time lock / schedule window to end), make your changes, then activate again.
 
 Remove an app (process) from a block:
 
@@ -187,7 +187,7 @@ journalctl -u open-turkey -f
 sudo make uninstall
 ```
 
-Uninstalling first runs a guard that **refuses while any locked block is still active** (so uninstalling can't be used to sidestep a lock — unlock those blocks first). When it proceeds, it deactivates all blocks and removes every blocking layer (`/etc/hosts` entries, firewall rules, browser policies) so the system is left clean rather than blocked-with-no-tool.
+Uninstalling first runs a guard that **refuses while any block is held** (character-locked, time-locked, or in an open schedule window), so uninstalling can't be used to sidestep a lock — clear the hold first. When it proceeds, it deactivates all blocks and removes every blocking layer (`/etc/hosts` entries, firewall rules, browser policies) so the system is left clean rather than blocked-with-no-tool.
 
 ## Intentionally not implemented
 
