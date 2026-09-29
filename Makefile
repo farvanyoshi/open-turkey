@@ -96,10 +96,13 @@ exec sudo $(INSTALL_PATH)/$(BINARY_INSTALLED) "$$@"\n' > $(INSTALL_PATH)/$(BINAR
 	@echo ">> Creating database directory at $(DB_DIR)..."
 	mkdir -p $(DB_DIR)
 
-	@echo ">> Enabling and starting the service..."
+	@echo ">> Enabling and (re)starting the service..."
+	# restart, not start: on a reinstall the daemon is already running the old
+	# binary, and "start" would leave it that way. Stopping the daemon never
+	# lifts blocks, so the restart leaves no gap in enforcement.
 	systemctl daemon-reload
 	systemctl enable open-turkey.service
-	systemctl start open-turkey.service
+	systemctl restart open-turkey.service
 
 	@echo ">> Installation completed successfully!"
 
