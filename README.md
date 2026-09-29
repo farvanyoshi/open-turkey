@@ -7,7 +7,7 @@ Open Turkey is an open-source, Linux-native alternative to [Cold Turkey](https:/
 It organizes blocking into **blocks** — named groups of:
 
 - **Sites** (domains, e.g. `youtube.com`)
-- **Apps** (process names, e.g. `discord`, `telegram-desktop`)
+- **Apps** (process names, e.g. `discord`, `telegram-desktop`, or Flatpak app IDs, e.g. `com.discordapp.Discord`)
 
 When you **activate** a block, a daemon continuously ensures the blocking layers stay applied.
 
@@ -18,7 +18,7 @@ Open Turkey doesn't rely on a single, easily-bypassed mechanism. Each active blo
 1. **`/etc/hosts`** — resolves blocked domains to `0.0.0.0` (affects every program, not just browsers). Written atomically, and every entry is validated so a crafted domain can't inject extra lines.
 2. **Firewall (`iptables` + `ip6tables`)** — drops packets to the blocked sites' real IPv4 and IPv6 addresses, and drops DNS-over-HTTPS (DoH) to well-known resolvers so browsers can't resolve names over HTTPS and slip past `/etc/hosts`. The real addresses are looked up directly from public resolvers, bypassing the poisoned `/etc/hosts`.
 3. **Browser enterprise policies** — managed `URLBlocklist`/`WebsiteFilter` policies for Firefox, Chromium, Google Chrome, Brave, Edge, Opera and Vivaldi, plus DoH turned off and locked in the browser itself. The user cannot disable these from inside the browser, not even in private/incognito mode.
-4. **Process kill** — terminates blocked apps that are running (SIGKILL), matched by exact executable name so unrelated processes aren't caught.
+4. **Process kill** — terminates blocked apps that are running (SIGKILL), matched by exact executable name so unrelated processes aren't caught. A Flatpak app ID matches every process in that app's sandbox, whatever its executables are called.
 
 Because the hosts and firewall layers act below the browser, blocking works even for browsers installed via Snap or Flatpak (where the system-wide browser policy file may not be read).
 
@@ -66,6 +66,12 @@ While a block is *held* (char-locked, time-locked, or in a schedule window) it a
 open-turkey block create social-media
 open-turkey block add-site social-media instagram.com x.com facebook.com
 open-turkey block add-app  social-media discord telegram
+```
+
+For a Flatpak app, block it by its app ID (see `flatpak list --app`). This is more reliable than guessing the process name, since many Flatpaks run under generic names like `python3` or `electron`:
+
+```bash
+open-turkey block add-app social-media com.discordapp.Discord
 ```
 
 Seed from a built-in template (`social-media`, `news`, `video`, `shopping`), or make an allowlist block:

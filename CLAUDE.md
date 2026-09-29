@@ -26,7 +26,8 @@ check that everything compiles: `CGO_ENABLED=0 go build ./...`.
   iptables + ip6tables firewall (real-IP resolution via a small built-in DNS
   client that bypasses `/etc/hosts`; expanded DoH blocklist), browser policies
   for Firefox/Chrome/Chromium/Brave/Edge/Opera/Vivaldi (blocklist, allowlist,
-  wildcard patterns, DoH disabled), and exact-name process killing. Domain
+  wildcard patterns, DoH disabled), and exact-name process killing (plus Flatpak app IDs, matched via the
+  `app-flatpak-<ID>-<n>.scope` cgroup or `/.flatpak-info`). Domain
   validation (`validate.go`) guards against `/etc/hosts` injection.
 - **Enforce** (`internal/enforce/`): turns the active blocks into layer inputs;
   `Apply` (CLI, on state change) and `Tick` (daemon, per cycle: schedule

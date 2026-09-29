@@ -59,3 +59,48 @@ func TestBaseName(t *testing.T) {
 		}
 	}
 }
+
+func TestIsFlatpakAppID(t *testing.T) {
+	for _, s := range []string{"com.discordapp.Discord", "org.vinegarhq.Sober", "org.gnome.Gtk3-demo"} {
+		if !isFlatpakAppID(s) {
+			t.Errorf("isFlatpakAppID(%q) = false; want true", s)
+		}
+	}
+	for _, s := range []string{"discord", "telegram-desktop", "python3.12", "a..b", ".a.b", "a.b.", "/usr/bin/a.b.c", "a.b c.d"} {
+		if isFlatpakAppID(s) {
+			t.Errorf("isFlatpakAppID(%q) = true; want false", s)
+		}
+	}
+}
+
+func TestFlatpakAppFromCgroup(t *testing.T) {
+	cases := map[string]string{
+		// cgroup v2, real layout under a systemd user session.
+		"0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-flatpak-org.vinegarhq.Sober-3261111766.scope\n": "org.vinegarhq.Sober",
+		// A dash inside the ID must survive; only the numeric instance is stripped.
+		"0::/user.slice/app.slice/app-flatpak-org.gnome.Gtk3-demo-42.scope\n": "org.gnome.Gtk3-demo",
+		// cgroup v1 style, several lines.
+		"12:pids:/user.slice\n1:name=systemd:/user.slice/app.slice/app-flatpak-com.discordapp.Discord-7.scope\n": "com.discordapp.Discord",
+		// Not a Flatpak.
+		"0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.kde.konsole-15233.scope/tab(16862).scope\n": "",
+		"0::/system.slice/open-turkey.service\n": "",
+		// Malformed instance suffix.
+		"0::/app.slice/app-flatpak-com.example.App-abc.scope\n": "",
+		"": "",
+	}
+	for in, want := range cases {
+		if got := flatpakAppFromCgroup(in); got != want {
+			t.Errorf("flatpakAppFromCgroup(%q) = %q; want %q", in, got, want)
+		}
+	}
+}
+
+func TestFlatpakAppFromInfo(t *testing.T) {
+	info := "[Application]\nname=com.discordapp.Discord\nruntime=runtime/org.freedesktop.Platform/x86_64/24.08\n\n[Instance]\nname=ignored\n"
+	if got := flatpakAppFromInfo(info); got != "com.discordapp.Discord" {
+		t.Errorf("flatpakAppFromInfo = %q; want com.discordapp.Discord", got)
+	}
+	if got := flatpakAppFromInfo("[Instance]\nname=x.y.z\n"); got != "" {
+		t.Errorf("flatpakAppFromInfo without [Application] = %q; want empty", got)
+	}
+}

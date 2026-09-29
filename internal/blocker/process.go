@@ -22,6 +22,17 @@
 // merely contains "discord". A 15-char comm truncation is handled specially so
 // long names like "telegram-desktop" still match.
 //
+// FLATPAK APP IDS
+// ---------------
+// A blocked name that looks like a Flatpak app ID (reverse-DNS with at least
+// two dots, e.g. "com.discordapp.Discord") also matches every process of that
+// Flatpak, whatever its executable is called. Flatpak runs each app in a
+// systemd scope named "app-flatpak-<ID>-<instance>.scope", visible in
+// /proc/<pid>/cgroup; when there is no such scope (no systemd user session) we
+// fall back to the "name=" key of the sandbox's /.flatpak-info. This catches
+// apps whose executable is a generic interpreter (python3, java, electron)
+// without killing every other program with that name.
+//
 // SIGNAL & SAFETY
 // ---------------
 // We send SIGKILL (can't be caught or ignored) so a blocked app can't refuse
@@ -53,6 +64,7 @@ func KillBlocked(processNames []string) (int, error) {
 	}
 
 	selfPID := os.Getpid()
+	flatpakIDs := flatpakAppIDs(processNames)
 	killed := 0
 
 	for _, entry := range entries {
@@ -64,7 +76,8 @@ func KillBlocked(processNames []string) (int, error) {
 			continue // never kill init or ourselves
 		}
 
-		if matchesBlockedProcess(pid, processNames) {
+		if matchesBlockedProcess(pid, processNames) ||
+			(len(flatpakIDs) > 0 && matchesFlatpakApp(pid, flatpakIDs)) {
 			if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
 				// Process already exited between listing and killing — fine.
 				continue
@@ -101,6 +114,118 @@ func matchesBlockedProcess(pid int, processNames []string) bool {
 	}
 	base := baseName(string(argv0))
 	return matchesName(base, processNames)
+}
+
+// flatpakAppIDs returns the entries of names that look like Flatpak app IDs.
+func flatpakAppIDs(names []string) []string {
+	var ids []string
+	for _, n := range names {
+		if isFlatpakAppID(n) {
+			ids = append(ids, n)
+		}
+	}
+	return ids
+}
+
+// isFlatpakAppID reports whether s has the shape of a Flatpak app ID: at least
+// three non-empty dot-separated elements (Flatpak's own minimum) and no path
+// separators or whitespace.
+func isFlatpakAppID(s string) bool {
+	if strings.ContainsAny(s, "/ \t\n") {
+		return false
+	}
+	parts := strings.Split(s, ".")
+	if len(parts) < 3 {
+		return false
+	}
+	for _, p := range parts {
+		if p == "" {
+			return false
+		}
+	}
+	return true
+}
+
+// matchesFlatpakApp reports whether the process at pid belongs to a Flatpak
+// whose app ID is one of ids (case-insensitive).
+func matchesFlatpakApp(pid int, ids []string) bool {
+	pidPath := "/proc/" + strconv.Itoa(pid)
+
+	id := ""
+	if cg, err := os.ReadFile(pidPath + "/cgroup"); err == nil {
+		id = flatpakAppFromCgroup(string(cg))
+	}
+	if id == "" {
+		if info, err := os.ReadFile(pidPath + "/root/.flatpak-info"); err == nil {
+			id = flatpakAppFromInfo(string(info))
+		}
+	}
+	if id == "" {
+		return false
+	}
+	for _, target := range ids {
+		if strings.EqualFold(id, target) {
+			return true
+		}
+	}
+	return false
+}
+
+// flatpakAppFromCgroup extracts the app ID from /proc/<pid>/cgroup content,
+// looking for a path element "app-flatpak-<ID>-<instance>.scope". It returns
+// "" when the process isn't in a Flatpak scope.
+func flatpakAppFromCgroup(content string) string {
+	const prefix, suffix = "app-flatpak-", ".scope"
+	for _, line := range strings.Split(content, "\n") {
+		// Each line is "hierarchy-ID:controllers:path".
+		i := strings.LastIndexByte(line, ':')
+		if i < 0 {
+			continue
+		}
+		for _, elem := range strings.Split(line[i+1:], "/") {
+			if !strings.HasPrefix(elem, prefix) || !strings.HasSuffix(elem, suffix) {
+				continue
+			}
+			mid := elem[len(prefix) : len(elem)-len(suffix)]
+			// Strip the trailing "-<instance>" (all digits).
+			dash := strings.LastIndexByte(mid, '-')
+			if dash <= 0 || !allDigits(mid[dash+1:]) {
+				continue
+			}
+			return mid[:dash]
+		}
+	}
+	return ""
+}
+
+// flatpakAppFromInfo extracts the app ID ("name=" under [Application]) from a
+// sandbox's /.flatpak-info keyfile. It returns "" if there is none.
+func flatpakAppFromInfo(content string) string {
+	inApplication := false
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "[") {
+			inApplication = line == "[Application]"
+			continue
+		}
+		if inApplication && strings.HasPrefix(line, "name=") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "name="))
+		}
+	}
+	return ""
+}
+
+// allDigits reports whether s is a non-empty string of ASCII digits.
+func allDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // matchesName reports whether name equals any of names (case-insensitive). It
