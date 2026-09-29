@@ -52,7 +52,7 @@ The installed program is independent of the source directory — once installed,
 
 - **Block**: a set of sites/apps (and optional browser patterns) you block together. A block is either a **blocklist** (block its sites) or an **allowlist** (`--allowlist`: block everything *except* its sites, enforced at the browser layer).
 - **Active**: a block currently in effect (the system is enforcing it).
-- **Character lock (`--lock`)**: prevents `stop`. The only way out is `unlock`, which requires completing a typing challenge (paste is rejected) — deliberate friction to outlast an impulse.
+- **Character lock (`--lock`)**: prevents `stop`. The only way out is `unlock`, which requires typing out a run of random common words, line by line, with at least 95% accuracy (paste is rejected; `--lock-chars` sets the length, default 600 characters ≈ 3 minutes) — deliberate friction to outlast an impulse.
 - **Time lock (`--for` / `--until`)**: the block cannot be removed *at all* — not even with the challenge — until the time passes. The strongest lock.
 - **Schedule**: recurring windows (e.g. weekdays 09:00–17:00). The daemon turns the block on when a window opens and off when it closes; while a window is open the block can't be stopped.
 

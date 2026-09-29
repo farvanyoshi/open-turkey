@@ -42,7 +42,7 @@ var startCmd = &cobra.Command{
 
 Locks (optional, and combinable):
   --lock            Require the typing challenge ('unlock') to deactivate.
-  --lock-chars N    Challenge length (default 300, minimum 30).
+  --lock-chars N    Challenge length in characters (default 600, minimum 30).
   --for DURATION    Time lock: cannot be removed for this long (e.g. 2h, 90m, 1h30m).
   --until HH:MM     Time lock until a clock time today (or tomorrow if already past).
 
