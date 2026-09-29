@@ -134,6 +134,8 @@ open-turkey schedule list social-media
 open-turkey schedule remove social-media 1
 ```
 
+Windows are same-day; for an overnight span (e.g. 17:00–05:00) add two windows (`17:00–23:59` and `00:00–05:00`). While a block is active inside a schedule's window, that schedule **can't be removed** until the window closes — otherwise deleting it would end the block early, defeating the point. Schedules whose windows aren't currently open can still be removed at any time.
+
 Show status:
 
 ```bash

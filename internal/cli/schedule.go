@@ -5,13 +5,16 @@
 //	open-turkey schedule remove <block> <id>
 //
 // While a scheduled window is open, the daemon keeps the block active and the
-// CLI refuses to stop/unlock it (see blockHold). Windows are same-day; express
-// an overnight span as two windows.
+// CLI refuses to stop/unlock it (see blockHold). "schedule remove" likewise
+// refuses to delete a schedule whose window is open on an active block, so
+// removing a schedule can't be used to end the block early. Windows are
+// same-day; express an overnight span as two windows.
 package cli
 
 import (
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/brunodcdo/open-turkey/internal/schedule"
 	"github.com/spf13/cobra"
@@ -118,6 +121,34 @@ var scheduleRemoveCmd = &cobra.Command{
 			return err
 		}
 		defer database.Close()
+
+		// Don't let removing a schedule become a way around its own window:
+		// if the block is active and this schedule's window is open right now,
+		// deleting it would make the daemon deactivate the block on its next
+		// tick — exactly what the scheduled hold is meant to prevent. Editing
+		// the schedule that is currently holding the block is refused; other
+		// (not-currently-open) schedules can still be removed.
+		now := time.Now()
+		schedules, err := database.ListSchedules(name)
+		if err != nil {
+			return err
+		}
+		for _, s := range schedules {
+			if s.ID != id {
+				continue
+			}
+			w := schedule.Window{Days: s.DaysMask, Start: s.StartMin, End: s.EndMin}
+			if w.ActiveAt(now) {
+				active, err := database.IsBlockActive(name)
+				if err != nil {
+					return err
+				}
+				if active {
+					return fmt.Errorf("schedule %d for '%s' is in its active window right now and can't be removed until it closes", id, name)
+				}
+			}
+			break
+		}
 
 		if err := database.RemoveSchedule(name, id); err != nil {
 			return err
