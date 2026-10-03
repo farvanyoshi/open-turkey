@@ -53,7 +53,7 @@ const MinLockChars = 30
 
 // MinAccuracy is the share of the challenge that must be typed correctly,
 // measured as 1 - editDistance/challengeLength.
-const MinAccuracy = 0.90
+const MinAccuracy = 0.98
 
 // maxLineWidth is the widest challenge line; narrower terminals get narrower
 // lines (see lineWidthFor).
