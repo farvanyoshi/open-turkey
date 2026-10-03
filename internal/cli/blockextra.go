@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/brunodcdo/open-turkey/internal/blocker"
 	"github.com/brunodcdo/open-turkey/internal/db"
@@ -189,8 +190,12 @@ var blockImportCmd = &cobra.Command{
 		if in.Name == "" {
 			return fmt.Errorf("import file has no block name")
 		}
+		in.Mode = strings.ToLower(strings.TrimSpace(in.Mode))
 		if in.Mode == "" {
 			in.Mode = db.ModeBlocklist
+		}
+		if in.Mode != db.ModeBlocklist && in.Mode != db.ModeAllowlist {
+			return fmt.Errorf("invalid mode %q in import (use '%s' or '%s')", in.Mode, db.ModeBlocklist, db.ModeAllowlist)
 		}
 
 		// Validate before writing anything.

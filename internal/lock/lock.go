@@ -16,8 +16,8 @@
 //     cases, a lot of digits and a sprinkle of symbols (see randomChar), so it
 //     can't be read as words, anticipated or memorized, and keeps the hands
 //     moving between Shift, the number row and the symbol keys.
-//   - It is typed one line at a time with visible, colored echo and working
-//     Backspace, so typos can be seen and fixed.
+//   - It is typed all at once, with plain echo and working Backspace but no
+//     per-character feedback, so mistakes have to be caught by re-reading.
 //   - Scoring is by edit distance with a MinAccuracy threshold, so a few typos
 //     don't throw away minutes of work, and a skipped character costs one
 //     error instead of misaligning everything after it.
@@ -25,7 +25,7 @@
 // To keep that friction real, the challenge is hard to skip:
 //
 //   - The input is read in raw terminal mode, one keypress at a time, and
-//     PASTING is detected and rejected (see readLineRaw).
+//     PASTING is detected and rejected (see readInputRaw).
 //   - A minimum length is enforced so "--lock-chars 0" or a negative value
 //     can't produce a trivially-empty challenge.
 package lock
@@ -42,10 +42,10 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// DefaultLockChars is the default challenge length in characters. 600 random
-// characters takes most people well over five minutes to transcribe — long
-// enough for an impulse to pass.
-const DefaultLockChars = 600
+// DefaultLockChars is the default challenge length in characters. 300 random
+// characters takes most people several minutes to transcribe — long enough
+// for an impulse to pass.
+const DefaultLockChars = 300
 
 // MinLockChars is the smallest challenge length we allow. It stops a lock from
 // being configured with a trivially short (or empty) challenge.
@@ -53,15 +53,15 @@ const MinLockChars = 30
 
 // MinAccuracy is the share of the challenge that must be typed correctly,
 // measured as 1 - editDistance/challengeLength.
-const MinAccuracy = 0.95
+const MinAccuracy = 0.90
 
 // maxLineWidth is the widest challenge line; narrower terminals get narrower
 // lines (see lineWidthFor).
 const maxLineWidth = 60
 
-// lineSlack is how many characters past the end of a line may be typed. It
-// caps each input line so it never wraps (which would break the redraw).
-const lineSlack = 5
+// inputSlack is how many characters past the end of the challenge may be
+// typed, so an extra character or two doesn't silently stop the input.
+const inputSlack = 5
 
 // pasteBurst is the most printable characters one read may carry before it's
 // treated as a paste. Fast typing (key rollover, SSH, a loaded system) can
@@ -70,9 +70,8 @@ const pasteBurst = 4
 
 // ANSI sequences used while typing.
 const (
-	ansiRed       = "\x1b[31m"
-	ansiReset     = "\x1b[0m"
 	ansiClearLine = "\r\x1b[2K"
+	ansiUp        = "\x1b[A"
 )
 
 // Character classes for the challenge. symbols is every printable ASCII
@@ -142,9 +141,9 @@ func randInt(n int) (int, error) {
 // RunChallenge generates a challenge, has the user type it, and reports
 // whether they reached MinAccuracy.
 //
-// On a real terminal the challenge is typed line by line in raw mode with
-// paste detection. When stdin is not a terminal (e.g. piped input in tests),
-// it falls back to reading one line — paste detection isn't meaningful there.
+// On a real terminal the challenge is typed in raw mode with paste detection.
+// When stdin is not a terminal (e.g. piped input in tests), it falls back to
+// reading one line — paste detection isn't meaningful there.
 func RunChallenge(length int) (bool, error) {
 	challenge, err := GenerateChallenge(length)
 	if err != nil {
@@ -162,14 +161,16 @@ func RunChallenge(length int) (bool, error) {
 	return runChallengeLine(challenge)
 }
 
-// runChallengeRaw shows the challenge one line at a time and reads each typed
-// line in raw mode. Accuracy is scored over all lines together.
+// runChallengeRaw shows the whole challenge, then reads the user's
+// transcription of all of it in one go, in raw mode.
 func runChallengeRaw(fd int, challenge string) (bool, error) {
-	lines := splitLines(challenge, lineWidthFor(fd))
+	width := lineWidthFor(fd)
 
-	fmt.Printf("Type each line (do not paste) and press Enter to continue.\n")
-	fmt.Printf("%d lines, %d characters. Mistakes show in red; Backspace fixes them.\n", len(lines), len(challenge))
-	fmt.Printf("You need %.0f%% accuracy overall. Ctrl-C cancels.\n", MinAccuracy*100)
+	fmt.Println(strings.Join(splitLines(challenge, width), "\n"))
+	fmt.Println()
+	fmt.Printf("Type all %d characters above (do not paste), then press Enter.\n", len(challenge))
+	fmt.Printf("Line breaks are only for display; don't type them. Your input wraps at the\n")
+	fmt.Printf("same width. You need %.0f%% accuracy. Backspace works; Ctrl-C cancels.\n\n", MinAccuracy*100)
 
 	restore, err := makeRaw(fd)
 	if err != nil {
@@ -190,41 +191,36 @@ func runChallengeRaw(fd int, challenge string) (bool, error) {
 	}
 	defer finish()
 
-	typed := make([]string, len(lines))
-	for i, line := range lines {
-		fmt.Printf("\r\n[%d/%d]\r\n  %s\r\n", i+1, len(lines), line)
-		input, outcome, err := readLineRaw(line)
-		if err != nil {
-			fmt.Print("\r\n")
-			return false, fmt.Errorf("failed to read input: %w", err)
-		}
-		switch outcome {
-		case outcomePaste:
-			fmt.Print("\r\nPaste detected. Unlocking requires typing the text by hand.\r\n")
-			return false, nil
-		case outcomeCancel:
-			fmt.Print("\r\nCancelled.\r\n")
-			return false, nil
-		}
-		typed[i] = input
+	input, outcome, err := readInputRaw(len(challenge)+inputSlack, width)
+	fmt.Print("\r\n")
+	if err != nil {
+		return false, fmt.Errorf("failed to read input: %w", err)
+	}
+	switch outcome {
+	case outcomePaste:
+		fmt.Print("Paste detected. Unlocking requires typing the text by hand.\r\n")
+		return false, nil
+	case outcomeCancel:
+		fmt.Print("Cancelled.\r\n")
+		return false, nil
 	}
 
-	fmt.Print("\r\n")
 	finish() // back to cooked mode so the result prints normally
-	return reportAccuracy(scoreLines(typed, lines)), nil
+	return reportAccuracy(score(input, challenge)), nil
 }
 
-// lineOutcome says how reading one line ended.
-type lineOutcome int
+// inputOutcome says how reading the input ended.
+type inputOutcome int
 
 const (
-	outcomeDone lineOutcome = iota
+	outcomeDone inputOutcome = iota
 	outcomeCancel
 	outcomePaste
 )
 
-// readLineRaw reads one line of input for target, redrawing it after every
-// keypress with mistakes in red. It returns on Enter, Ctrl-C or a paste.
+// readInputRaw reads the transcription, echoing it wrapped at width so it lines
+// up with the displayed challenge. It returns on Enter, Ctrl-C or a paste.
+// At most maxLen characters are accepted.
 //
 // PASTE DETECTION. In raw mode a human keypress arrives as one byte per read,
 // while a paste dumps many bytes at once. So:
@@ -235,12 +231,10 @@ const (
 //
 // Escape sequences from real keys (arrows, etc.) begin with ESC and are ignored
 // rather than counted as input.
-func readLineRaw(target string) (string, lineOutcome, error) {
-	maxLen := len(target) + lineSlack
+func readInputRaw(maxLen, width int) (string, inputOutcome, error) {
 	var typed []byte
 	buf := make([]byte, 512)
 
-	fmt.Print(renderTyped(typed, target))
 	for {
 		n, err := os.Stdin.Read(buf)
 		if err != nil {
@@ -277,43 +271,42 @@ func readLineRaw(target string) (string, lineOutcome, error) {
 			case b == 127 || b == 8: // Backspace / Delete
 				if len(typed) > 0 {
 					typed = typed[:len(typed)-1]
+					fmt.Print(echoBackspace(typed, width))
 				}
 			case b >= 0x20 && b < 0x7f: // printable ASCII
 				if len(typed) < maxLen {
 					typed = append(typed, b)
+					fmt.Print(echoAppend(typed, width))
 				}
 			default:
 				// ignore other control bytes
 			}
 		}
-		fmt.Print(renderTyped(typed, target))
 	}
 }
 
-// renderTyped returns the escape sequence that redraws the input line: the
-// "> " prompt followed by typed, with characters that don't match target at
-// the same position (or run past its end) in red.
-func renderTyped(typed []byte, target string) string {
-	var builder strings.Builder
-	builder.WriteString(ansiClearLine)
-	builder.WriteString("> ")
-	red := false
-	for i, b := range typed {
-		wrong := i >= len(target) || b != target[i]
-		if wrong != red {
-			if wrong {
-				builder.WriteString(ansiRed)
-			} else {
-				builder.WriteString(ansiReset)
-			}
-			red = wrong
-		}
-		builder.WriteByte(b)
+// echoAppend returns the output for typed's newly-appended last character,
+// starting a new line when the previous one is full. We wrap ourselves at
+// width (narrower than the terminal) so the terminal never auto-wraps and
+// echoBackspace always knows where the cursor is.
+func echoAppend(typed []byte, width int) string {
+	n := len(typed)
+	if n > 1 && (n-1)%width == 0 {
+		return "\r\n" + string(typed[n-1])
 	}
-	if red {
-		builder.WriteString(ansiReset)
+	return string(typed[n-1])
+}
+
+// echoBackspace returns the output that erases the character just removed
+// from typed: the current line is cleared and redrawn, and when the removed
+// character was alone on its line, the cursor moves back up to the previous
+// (full) line.
+func echoBackspace(typed []byte, width int) string {
+	n := len(typed)
+	if n > 0 && n%width == 0 {
+		return ansiClearLine + ansiUp + "\r" + string(typed[n-width:])
 	}
-	return builder.String()
+	return ansiClearLine + string(typed[n-n%width:])
 }
 
 // runChallengeLine shows the whole challenge and reads a single line (used when
@@ -331,25 +324,16 @@ func runChallengeLine(challenge string) (bool, error) {
 		}
 		return false, fmt.Errorf("empty input — no text was typed")
 	}
-	return reportAccuracy(scoreLines([]string{scanner.Text()}, []string{challenge})), nil
+	return reportAccuracy(score(scanner.Text(), challenge)), nil
 }
 
-// scoreLines returns the accuracy of typed against lines: one minus the summed
-// edit distance of each pair over the total target length, floored at zero.
-func scoreLines(typed, lines []string) float64 {
-	distance, total := 0, 0
-	for i, line := range lines {
-		input := ""
-		if i < len(typed) {
-			input = typed[i]
-		}
-		distance += editDistance(input, line)
-		total += len(line)
-	}
-	if total == 0 {
+// score returns the accuracy of typed against target: one minus the edit
+// distance over the target length, floored at zero.
+func score(typed, target string) float64 {
+	if len(target) == 0 {
 		return 0
 	}
-	accuracy := 1 - float64(distance)/float64(total)
+	accuracy := 1 - float64(editDistance(typed, target))/float64(len(target))
 	if accuracy < 0 {
 		return 0
 	}
@@ -415,14 +399,14 @@ func splitLines(text string, width int) []string {
 	return lines
 }
 
-// lineWidthFor picks the challenge line width for the terminal at fd so that
-// the "> " prompt plus a full line plus lineSlack never wraps.
+// lineWidthFor picks the challenge line width for the terminal at fd: at most
+// maxLineWidth, and narrow enough that a full line never auto-wraps.
 func lineWidthFor(fd int) int {
 	ws, err := unix.IoctlGetWinsize(fd, unix.TIOCGWINSZ)
 	if err != nil || ws.Col == 0 {
 		return maxLineWidth
 	}
-	width := int(ws.Col) - len("> ") - lineSlack - 1
+	width := int(ws.Col) - 1
 	if width > maxLineWidth {
 		return maxLineWidth
 	}

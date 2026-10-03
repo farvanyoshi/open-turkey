@@ -52,7 +52,7 @@ The installed program is independent of the source directory — once installed,
 
 - **Block**: a set of sites/apps (and optional browser patterns) you block together. A block is either a **blocklist** (block its sites) or an **allowlist** (`--allowlist`: block everything *except* its sites, enforced at the browser layer).
 - **Active**: a block currently in effect (the system is enforcing it).
-- **Character lock (`--lock`)**: prevents `stop`. The only way out is `unlock`, which requires typing out a string of random characters, line by line, with at least 95% accuracy (paste is rejected; `--lock-chars` sets the length, default 600 characters, which takes most people well over five minutes) — deliberate friction to outlast an impulse. Each character is a letter (upper or lower case) 60% of the time, a digit 35% of the time and a symbol 5% of the time; symbols can be any printable ASCII symbol on a US keyboard (`` !"#$%&'()*+,-./:;<=>?@[\]^_`{|}~ ``).
+- **Character lock (`--lock`)**: prevents `stop`. The only way out is `unlock`, which shows a string of random characters and requires typing all of it in one go, with at least 90% accuracy. Mistakes aren't highlighted (Backspace works, but you have to spot them yourself), paste is rejected, and `--lock-chars` sets the length (default 300 characters, several minutes of typing) — deliberate friction to outlast an impulse. Each character is a letter (upper or lower case) 60% of the time, a digit 35% of the time and a symbol 5% of the time; symbols can be any printable ASCII symbol on a US keyboard (`` !"#$%&'()*+,-./:;<=>?@[\]^_`{|}~ ``).
 - **Time lock (`--for` / `--until`)**: the block cannot be removed *at all* — not even with the challenge — until the time passes. The strongest lock.
 - **Schedule**: recurring windows (e.g. weekdays 09:00–17:00). The daemon turns the block on when a window opens and off when it closes; while a window is open the block can't be stopped. Starting **30 minutes before** a window opens, the block is frozen: it can't be edited or removed, and that schedule can't be removed, until the window closes.
 
@@ -122,7 +122,7 @@ Activate with a character lock, or a time lock:
 
 ```bash
 open-turkey start social-media --lock              # typing challenge to remove
-open-turkey start social-media --lock --lock-chars 500
+open-turkey start social-media --lock --lock-chars 200
 open-turkey start social-media --for 2h            # can't be removed for 2 hours
 open-turkey start social-media --until 17:00       # can't be removed until 17:00
 ```
@@ -156,6 +156,13 @@ Unlock a character-locked block (this also **deactivates** it). Time locks and o
 
 ```bash
 open-turkey unlock social-media
+```
+
+To practice or test the challenge without touching any block (no root needed), run this from the source directory, optionally with a length:
+
+```bash
+./try-challenge.sh        # 300 characters
+./try-challenge.sh 100
 ```
 
 ### 3) Editing a block's lists

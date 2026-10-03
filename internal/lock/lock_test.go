@@ -108,22 +108,20 @@ func TestEditDistance(t *testing.T) {
 	}
 }
 
-func TestScoreLines(t *testing.T) {
-	lines := []string{"river cotton ask window", "planet eleven shape"} // 23 + 19 = 42 chars
-	if got := scoreLines(lines, lines); got != 1 {
+func TestScore(t *testing.T) {
+	target := "aB3$eF7&iJ1!mN0pQr5t" // 20 chars
+	if got := score(target, target); got != 1 {
 		t.Errorf("perfect input scored %v; want 1", got)
 	}
-	// Two typos over 42 chars: 1 - 2/42 ≈ 95.2%.
-	typed := []string{"river coton ask window", "planet elevn shape"}
-	if got := scoreLines(typed, lines); got < 0.952 || got > 0.953 {
-		t.Errorf("two-typo input scored %v; want ~0.952", got)
+	// Two errors (a substitution and a skipped character) over 20: 90%.
+	if got := score("aB3$eF7&iJ1!mN0pqr5", target); got < 0.899 || got > 0.901 {
+		t.Errorf("two-error input scored %v; want 0.90", got)
 	}
-	// A missing line counts every character of it as an error.
-	if got := scoreLines(lines[:1], lines); got > 0.55 {
-		t.Errorf("missing line scored %v; want 23/42", got)
+	if got := score("", target); got != 0 {
+		t.Errorf("empty input scored %v; want 0", got)
 	}
 	// Garbage can't go below zero.
-	if got := scoreLines([]string{strings.Repeat("z", 100), ""}, lines); got != 0 {
+	if got := score(strings.Repeat("z", 100), target); got != 0 {
 		t.Errorf("garbage scored %v; want 0", got)
 	}
 }
@@ -155,17 +153,30 @@ func TestSplitLines(t *testing.T) {
 	}
 }
 
-func TestRenderTypedMarksMistakes(t *testing.T) {
-	got := renderTyped([]byte("rivxr"), "river")
-	want := ansiClearLine + "> riv" + ansiRed + "x" + ansiReset + "r"
-	if got != want {
-		t.Errorf("renderTyped = %q; want %q", got, want)
+func TestEchoWrapping(t *testing.T) {
+	const w = 4
+	// Replaying echoAppend for "abcdefghi" wraps after every 4 characters.
+	var out strings.Builder
+	typed := []byte{}
+	for _, c := range []byte("abcdefghi") {
+		typed = append(typed, c)
+		out.WriteString(echoAppend(typed, w))
 	}
-	// Characters past the end of the target are wrong.
-	got = renderTyped([]byte("ab!"), "ab")
-	want = ansiClearLine + "> ab" + ansiRed + "!" + ansiReset
-	if got != want {
-		t.Errorf("renderTyped overflow = %q; want %q", got, want)
+	if got := out.String(); got != "abcd\r\nefgh\r\ni" {
+		t.Errorf("echoAppend output = %q", got)
+	}
+
+	// Removing a character that was alone on its line goes back up and
+	// redraws the previous full line.
+	if got := echoBackspace([]byte("abcdefgh"), w); got != ansiClearLine+ansiUp+"\refgh" {
+		t.Errorf("echoBackspace at line start = %q", got)
+	}
+	// Otherwise just the current line is redrawn.
+	if got := echoBackspace([]byte("abcdef"), w); got != ansiClearLine+"ef" {
+		t.Errorf("echoBackspace mid-line = %q", got)
+	}
+	if got := echoBackspace([]byte(""), w); got != ansiClearLine {
+		t.Errorf("echoBackspace to empty = %q", got)
 	}
 }
 

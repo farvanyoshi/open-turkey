@@ -62,3 +62,6 @@ remove-app | add-pattern | remove-pattern | set-mode | export | import | list |
 info | remove`, `start [--lock] [--lock-chars N] [--for D | --until HH:MM]`,
 `stop`, `unlock`, `status`, `schedule add|list|remove`, and the hidden
 `prepare-uninstall` (run by `make uninstall`).
+
+`./try-challenge.sh [length]` (source: `cmd/try-challenge/`) builds and runs the
+unlock challenge on its own for practice/testing; it touches no blocks.
