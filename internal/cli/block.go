@@ -30,6 +30,7 @@ import (
 	"github.com/brunodcdo/open-turkey/internal/blocker"
 	"github.com/brunodcdo/open-turkey/internal/db"
 	"github.com/brunodcdo/open-turkey/internal/enforce"
+	"github.com/brunodcdo/open-turkey/internal/schedule"
 	"github.com/spf13/cobra"
 )
 
@@ -69,16 +70,27 @@ func openDB() (*db.DB, error) {
 // challenge, or a time lock's expiry). Allowing its site/app lists to be edited
 // would be a trivial bypass: emptying a block deactivates it, and even trimming
 // entries weakens a lock the user set precisely so they couldn't weaken it on
-// impulse. So all four edit commands go through this guard.
+// impulse. So every edit command goes through this guard.
+//
+// The same applies from schedule.EditFreeze before a schedule window opens:
+// otherwise a block could be emptied minutes before it is due to start.
 func ensureEditable(database *db.DB, name string) error {
 	hold, err := blockHold(database, name, time.Now())
 	if err != nil {
 		return err
 	}
 	if hold.held() {
+		if hold.scheduleFrozen && !hold.active {
+			return fmt.Errorf("block '%s' has a schedule window that is open or starts within %s, and cannot be edited until that window closes", name, freezeLead())
+		}
 		return fmt.Errorf("block '%s' is currently held (locked, time-locked or in a scheduled window) and cannot be edited. Remove the hold first", name)
 	}
 	return nil
+}
+
+// freezeLead renders schedule.EditFreeze for messages ("30 minutes").
+func freezeLead() string {
+	return fmt.Sprintf("%d minutes", int(schedule.EditFreeze/time.Minute))
 }
 
 // normalizeDomains normalizes each raw domain and rejects any that aren't valid
@@ -577,7 +589,9 @@ var blockInfoCmd = &cobra.Command{
 
 // blockRemoveCmd removes a block by name.
 // If the block is active, the database prevents the removal —
-// the user must deactivate the block before removing it.
+// the user must deactivate the block before removing it. Removal is also
+// refused while a schedule window is open or about to open (see
+// ensureEditable), since deleting the block deletes its schedules.
 //
 // Usage: open-turkey block remove social-media
 var blockRemoveCmd = &cobra.Command{
@@ -594,6 +608,10 @@ var blockRemoveCmd = &cobra.Command{
 		}
 		defer database.Close()
 
+		if err := ensureEditable(database, name); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 		if err := database.RemoveBlock(name); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)

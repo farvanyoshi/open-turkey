@@ -14,9 +14,11 @@
 //   - Time lock (--for / --until): cannot be removed AT ALL until the time
 //     passes — not even with the challenge. The strongest lock.
 //   - Schedule window: while a scheduled window is open, the block is held; the
-//     daemon turns it off when the window closes.
+//     daemon turns it off when the window closes. For edits (not stop/unlock)
+//     the hold starts schedule.EditFreeze (30 minutes) before the window
+//     opens, so a block can't be emptied just before it is due to start.
 //
-// All three are enforced centrally by blockHold so start/stop/unlock/edit and
+// All of these are enforced centrally by blockHold so start/stop/unlock/edit and
 // uninstall agree on when a block may be removed.
 package cli
 
@@ -321,7 +323,10 @@ type holdState struct {
 	lockChars    int
 	lockedUntil  int64
 	scheduledNow bool
-	now          time.Time
+	// scheduleFrozen: a schedule window is open now or opens within
+	// schedule.EditFreeze, whether or not the block is active yet.
+	scheduleFrozen bool
+	now            time.Time
 }
 
 func (h holdState) timeLocked() bool { return h.lockedUntil > h.now.Unix() }
@@ -331,7 +336,7 @@ func (h holdState) until() string {
 
 // held reports whether the block currently can't be freely removed/edited.
 func (h holdState) held() bool {
-	return h.active && (h.charLocked || h.timeLocked() || h.scheduledNow)
+	return h.scheduleFrozen || h.active && (h.charLocked || h.timeLocked() || h.scheduledNow)
 }
 
 // blockHold gathers everything that determines whether a block may be removed
@@ -355,6 +360,11 @@ func blockHold(database *db.DB, name string, now time.Time) (holdState, error) {
 		}
 		h.scheduledNow = sched
 	}
+	frozen, err := enforce.ScheduleFrozen(database, name, now)
+	if err != nil {
+		return holdState{}, err
+	}
+	h.scheduleFrozen = frozen
 	return h, nil
 }
 

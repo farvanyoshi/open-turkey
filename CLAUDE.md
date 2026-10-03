@@ -27,20 +27,25 @@ check that everything compiles: `CGO_ENABLED=0 go build ./...`.
   client that bypasses `/etc/hosts`; expanded DoH blocklist), browser policies
   for Firefox/Chrome/Chromium/Brave/Edge/Opera/Vivaldi (blocklist, allowlist,
   wildcard patterns, DoH disabled), and exact-name process killing (plus Flatpak app IDs, matched via the
-  `app-flatpak-<ID>-<n>.scope` cgroup or `/.flatpak-info`). Domain
+  `app-flatpak-<ID>-<n>.scope` cgroup or `/.flatpak-info`, and desktop app units
+  `app-[<launcher>-]<ID>-<n>.scope`/`@….service` whose ID is or ends in `.<name>`); every
+  descendant of a matched process is killed too, except under shells/session processes. Domain
   validation (`validate.go`) guards against `/etc/hosts` injection.
 - **Enforce** (`internal/enforce/`): turns the active blocks into layer inputs;
   `Apply` (CLI, on state change) and `Tick` (daemon, per cycle: schedule
   reconciliation + drift-only reapply). Single source of truth so CLI and daemon
   agree.
-- **Schedule** (`internal/schedule/`): pure time logic for recurring windows.
+- **Schedule** (`internal/schedule/`): pure time logic for recurring windows;
+  `EditFreeze` (30 min) is the lead time before a window during which the CLI
+  refuses edits/removals of that block or schedule.
 - **Daemon** (`internal/daemon/`): systemd service, calls `enforce.Tick` every 5s.
 - **DB** (`internal/db/`): SQLite at `/var/lib/open-turkey/open-turkey.db` (WAL);
   `OPEN_TURKEY_DB` overrides the path (tests only; the unit never sets it).
   `db.go` core + `features.go` (modes, patterns, schedules, time locks, schema
   upgrades).
-- **Lock** (`internal/lock/`): raw-mode, paste-resistant typing challenge that
-  gates a char-locked block's deactivation.
+- **Lock** (`internal/lock/`): raw-mode, paste-resistant typing challenge (random
+  characters: 60% letters, 35% digits, 5% symbols) that gates a char-locked
+  block's deactivation.
 
 ## System installation
 

@@ -1,6 +1,9 @@
 package blocker
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 func TestMatchesName(t *testing.T) {
 	names := []string{"discord", "telegram-desktop", "firefox"}
@@ -102,5 +105,94 @@ func TestFlatpakAppFromInfo(t *testing.T) {
 	}
 	if got := flatpakAppFromInfo("[Instance]\nname=x.y.z\n"); got != "" {
 		t.Errorf("flatpakAppFromInfo without [Application] = %q; want empty", got)
+	}
+}
+
+func TestParsePPID(t *testing.T) {
+	cases := map[string]int{
+		"1234 (lutris) S 1000 1234 1234 0 -1 4194560":         1000,
+		"77 (tmux: server) S 1 77 77 0 -1":                    1,
+		"88 (weird) name)) R 42 88 88 0":                      42, // comm with ')' and spaces
+		"99 (Hades2.exe) S 4321 99 99 0 -1 4194304 1234 0 0 ": 4321,
+	}
+	for in, want := range cases {
+		if got, ok := parsePPID(in); !ok || got != want {
+			t.Errorf("parsePPID(%q) = %d, %v; want %d", in, got, ok, want)
+		}
+	}
+	for _, bad := range []string{"", "12 (x", "12 (x) S", "12 (x) S abc"} {
+		if _, ok := parsePPID(bad); ok {
+			t.Errorf("parsePPID(%q) ok; want failure", bad)
+		}
+	}
+}
+
+func TestDescendants(t *testing.T) {
+	// 10 (lutris) → 11 (lutris-wrapper) → 12 (wine) → 13 (Hades2.exe)
+	//            ↘ 14 (python3)
+	// 20 (unrelated) → 21
+	children := map[int][]int{10: {11, 14}, 11: {12}, 12: {13}, 20: {21}}
+	got := descendants([]int{10}, children)
+	want := []int{11, 14, 12, 13}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("descendants = %v; want %v", got, want)
+	}
+	// A root that is also another root's descendant isn't returned twice.
+	if got := descendants([]int{10, 11}, children); fmt.Sprint(got) != "[14 12 13]" {
+		t.Errorf("descendants with nested roots = %v", got)
+	}
+}
+
+func TestAppScopeIDs(t *testing.T) {
+	cases := map[string][]string{
+		// GNOME: launcher prefix, numeric suffix.
+		"0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-gnome-net.lutris.Lutris-4242.scope\n": {"gnome-net.lutris.Lutris", "net.lutris.Lutris"},
+		// Escaped dash in the ID.
+		`0::/user.slice/app.slice/app-gnome-telegram\x2ddesktop-99.scope` + "\n": {"gnome-telegram-desktop", "telegram-desktop"},
+		// KDE service form with @random, no launcher.
+		"0::/user.slice/app.slice/app-org.kde.dolphin@a1b2c3.service\n": {"org.kde.dolphin"},
+		// Nested scope: only the app- element counts.
+		"0::/user.slice/app.slice/app-org.kde.konsole-15233.scope/tab(16862).scope\n": {"org.kde.konsole"},
+		// Not an app unit.
+		"0::/system.slice/open-turkey.service\n":                                    nil,
+		"0::/user.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice\n": nil,
+		"": nil,
+	}
+	for in, want := range cases {
+		if got := appScopeIDs(in); fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Errorf("appScopeIDs(%q) = %q; want %q", in, got, want)
+		}
+	}
+}
+
+func TestMatchesAppID(t *testing.T) {
+	ids := []string{"gnome-net.lutris.Lutris", "net.lutris.Lutris"}
+	for _, n := range []string{"lutris", "LUTRIS", "net.lutris.Lutris"} {
+		if !matchesAppID(ids, []string{n}) {
+			t.Errorf("matchesAppID(%v, %q) = false; want true", ids, n)
+		}
+	}
+	for _, n := range []string{"lutri", "net", "net.lutris", "gnome"} {
+		if matchesAppID(ids, []string{n}) {
+			t.Errorf("matchesAppID(%v, %q) = true; want false", ids, n)
+		}
+	}
+	// The flatpak launcher form covers the full Flatpak app ID.
+	if !matchesAppID(appScopeIDs("0::/app.slice/app-flatpak-com.discordapp.Discord-7.scope\n"), []string{"discord"}) {
+		t.Error("blocking \"discord\" should match the Discord Flatpak's scope")
+	}
+}
+
+func TestUnescapeUnit(t *testing.T) {
+	cases := map[string]string{
+		`telegram\x2ddesktop`: "telegram-desktop",
+		`plain`:               "plain",
+		`bad\xzz`:             `bad\xzz`,
+		`end\x2`:              `end\x2`,
+	}
+	for in, want := range cases {
+		if got := unescapeUnit(in); got != want {
+			t.Errorf("unescapeUnit(%q) = %q; want %q", in, got, want)
+		}
 	}
 }

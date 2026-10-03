@@ -6,9 +6,10 @@
 //
 // While a scheduled window is open, the daemon keeps the block active and the
 // CLI refuses to stop/unlock it (see blockHold). "schedule remove" likewise
-// refuses to delete a schedule whose window is open on an active block, so
-// removing a schedule can't be used to end the block early. Windows are
-// same-day; express an overnight span as two windows.
+// refuses to delete a schedule whose window is open or opens within
+// schedule.EditFreeze, so removing a schedule can't be used to end the block
+// early or stop it from starting. Windows are same-day; express an overnight
+// span as two windows.
 package cli
 
 import (
@@ -123,12 +124,10 @@ var scheduleRemoveCmd = &cobra.Command{
 		defer database.Close()
 
 		// Don't let removing a schedule become a way around its own window:
-		// if the block is active and this schedule's window is open right now,
-		// deleting it would make the daemon deactivate the block on its next
-		// tick — exactly what the scheduled hold is meant to prevent. Editing
-		// the schedule that is currently holding the block is refused; other
-		// (not-currently-open) schedules can still be removed.
-		now := time.Now()
+		// deleting the schedule that is holding the block (or is about to)
+		// would make the daemon deactivate it, or never activate it. So a
+		// schedule whose window is open or opens within schedule.EditFreeze
+		// can't be removed; other schedules still can.
 		schedules, err := database.ListSchedules(name)
 		if err != nil {
 			return err
@@ -138,14 +137,8 @@ var scheduleRemoveCmd = &cobra.Command{
 				continue
 			}
 			w := schedule.Window{Days: s.DaysMask, Start: s.StartMin, End: s.EndMin}
-			if w.ActiveAt(now) {
-				active, err := database.IsBlockActive(name)
-				if err != nil {
-					return err
-				}
-				if active {
-					return fmt.Errorf("schedule %d for '%s' is in its active window right now and can't be removed until it closes", id, name)
-				}
+			if w.ActiveWithin(time.Now(), schedule.EditFreeze) {
+				return fmt.Errorf("schedule %d for '%s' is in its window or starts within %s, and can't be removed until the window closes", id, name, freezeLead())
 			}
 			break
 		}

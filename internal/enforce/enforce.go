@@ -221,6 +221,23 @@ func ScheduleActiveNow(d *db.DB, blockName string, now time.Time) (bool, error) 
 	return false, nil
 }
 
+// ScheduleFrozen reports whether any of a block's schedule windows is open now
+// or opens within schedule.EditFreeze. The CLI refuses edits that could weaken
+// the block while this holds, whether or not the block is active yet.
+func ScheduleFrozen(d *db.DB, blockName string, now time.Time) (bool, error) {
+	schedules, err := d.ListSchedules(blockName)
+	if err != nil {
+		return false, err
+	}
+	for _, s := range schedules {
+		w := schedule.Window{Days: s.DaysMask, Start: s.StartMin, End: s.EndMin}
+		if w.ActiveWithin(now, schedule.EditFreeze) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func dedup(in []string) []string {
 	set := make(map[string]struct{}, len(in))
 	for _, s := range in {

@@ -33,11 +33,35 @@
 // apps whose executable is a generic interpreter (python3, java, electron)
 // without killing every other program with that name.
 //
+// DESKTOP APP SCOPES
+// ------------------
+// Desktop environments run each app launched from a menu or dock in its own
+// systemd unit, named per the XDG spec "app-[<launcher>-]<ID>-<random>.scope"
+// or "app-[<launcher>-]<ID>[@<random>].service" (e.g.
+// "app-gnome-net.lutris.Lutris-4242.scope"). A blocked name matches every
+// process in such a unit whose app ID equals it or ends in ".<name>", so
+// blocking "lutris" covers "net.lutris.Lutris" and everything it started —
+// even processes that were reparented away from it. Flatpak scopes have the
+// same shape, so "discord" also covers "com.discordapp.Discord".
+//
+// CHILD PROCESSES
+// ---------------
+// Killing only the matched process isn't enough: a launcher's children (a
+// game started from Lutris or Steam, say) would keep running. So every
+// descendant of a matched process is killed too. The process tree is
+// snapshotted before anything is killed, because a killed parent's children
+// are immediately reparented and the link to it is lost. When the blocked
+// process itself is a shell, session or other infrastructure process
+// (noDescend), its children are spared, so blocking e.g. "bash" doesn't take
+// down everything started from a terminal.
+//
 // SIGNAL & SAFETY
 // ---------------
 // We send SIGKILL (can't be caught or ignored) so a blocked app can't refuse
-// to die. We never touch PID 1 (init/systemd) or our own process, and we
-// ignore processes that vanish between listing and killing (a normal race).
+// to die. We never touch PID 1 (init/systemd), our own process or any of our
+// ancestors (so running the CLI from inside a blocked app doesn't kill the CLI
+// mid-way; the daemon catches that app on its next pass), and we ignore
+// processes that vanish between listing and killing (a normal race).
 // =============================================================================
 package blocker
 
@@ -51,8 +75,24 @@ import (
 // commMaxLen is the kernel's fixed width for /proc/<pid>/comm (TASK_COMM_LEN-1).
 const commMaxLen = 15
 
-// KillBlocked walks every process and SIGKILLs those whose executable name
-// matches one of processNames. It returns the number of processes killed.
+// noDescend lists executables whose children are NOT killed when they are
+// themselves blocked: shells, terminal multiplexers and session/system
+// infrastructure, whose "children" are really unrelated programs. It only
+// applies to a directly-matched process; a shell running inside a blocked app
+// (a terminal's tab, say) is killed along with its children.
+var noDescend = map[string]bool{
+	"systemd": true, "init": true, "sudo": true, "su": true, "doas": true,
+	"pkexec": true, "login": true, "sshd": true, "dbus-daemon": true,
+	"dbus-broker": true, "gdm": true, "sddm": true, "lightdm": true,
+	"gnome-shell": true, "gnome-session-b": true, "plasmashell": true,
+	"kwin_wayland": true, "kwin_x11": true, "ksmserver": true, "Xorg": true,
+	"Xwayland": true, "bash": true, "zsh": true, "fish": true, "sh": true,
+	"dash": true, "tmux": true, "tmux: server": true, "screen": true,
+}
+
+// KillBlocked SIGKILLs every process that matches one of processNames (by
+// executable name, Flatpak app ID or desktop app scope) together with all of
+// its descendants. It returns the number of processes killed.
 func KillBlocked(processNames []string) (int, error) {
 	if len(processNames) == 0 {
 		return 0, nil
@@ -63,30 +103,119 @@ func KillBlocked(processNames []string) (int, error) {
 		return 0, err
 	}
 
-	selfPID := os.Getpid()
 	flatpakIDs := flatpakAppIDs(processNames)
-	killed := 0
 
+	// Snapshot the tree and find the directly-matched processes.
+	parent := map[int]int{}
+	children := map[int][]int{}
+	var roots []int
 	for _, entry := range entries {
 		pid, err := strconv.Atoi(entry.Name())
 		if err != nil {
 			continue // not a PID directory
 		}
-		if pid == 1 || pid == selfPID {
-			continue // never kill init or ourselves
+		ppid, ok := readPPID(pid)
+		if !ok {
+			continue // already gone
 		}
+		parent[pid] = ppid
+		children[ppid] = append(children[ppid], pid)
 
 		if matchesBlockedProcess(pid, processNames) ||
-			(len(flatpakIDs) > 0 && matchesFlatpakApp(pid, flatpakIDs)) {
-			if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
-				// Process already exited between listing and killing — fine.
-				continue
-			}
-			killed++
+			matchesProcessScope(pid, processNames, flatpakIDs) {
+			roots = append(roots, pid)
 		}
 	}
 
+	// Never kill init, ourselves or our ancestors.
+	protected := map[int]bool{1: true}
+	for pid := os.Getpid(); pid > 0 && !protected[pid]; pid = parent[pid] {
+		protected[pid] = true
+	}
+
+	// Collect roots and their descendants, parents before children.
+	var follow []int
+	for _, pid := range roots {
+		if !noDescend[readComm(pid)] {
+			follow = append(follow, pid)
+		}
+	}
+	targets := append(roots, descendants(follow, children)...)
+
+	killed := 0
+	for _, pid := range targets {
+		if protected[pid] {
+			continue
+		}
+		protected[pid] = true // a root may also be another root's descendant
+		if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
+			// Process already exited between listing and killing — fine.
+			continue
+		}
+		killed++
+	}
+
 	return killed, nil
+}
+
+// descendants returns every descendant of roots in children, breadth-first
+// (parents before children), each pid once. roots themselves are not included.
+func descendants(roots []int, children map[int][]int) []int {
+	seen := map[int]bool{}
+	for _, pid := range roots {
+		seen[pid] = true
+	}
+	var out []int
+	queue := append([]int(nil), roots...)
+	for len(queue) > 0 {
+		pid := queue[0]
+		queue = queue[1:]
+		for _, child := range children[pid] {
+			if !seen[child] {
+				seen[child] = true
+				out = append(out, child)
+				queue = append(queue, child)
+			}
+		}
+	}
+	return out
+}
+
+// readPPID returns the parent PID of pid from /proc/<pid>/stat.
+func readPPID(pid int) (int, bool) {
+	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return 0, false
+	}
+	return parsePPID(string(data))
+}
+
+// parsePPID extracts the PPID from /proc/<pid>/stat content: "pid (comm) state
+// ppid ...". comm may itself contain spaces and parentheses, so fields are
+// counted from the LAST ')'.
+func parsePPID(stat string) (int, bool) {
+	i := strings.LastIndexByte(stat, ')')
+	if i < 0 {
+		return 0, false
+	}
+	fields := strings.Fields(stat[i+1:])
+	if len(fields) < 2 {
+		return 0, false
+	}
+	ppid, err := strconv.Atoi(fields[1])
+	if err != nil {
+		return 0, false
+	}
+	return ppid, true
+}
+
+// readComm returns /proc/<pid>/comm, or "" if it can't be read.
+func readComm(pid int) string {
+	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/comm")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
 }
 
 // matchesBlockedProcess reports whether the process at pid has an executable
@@ -146,13 +275,22 @@ func isFlatpakAppID(s string) bool {
 	return true
 }
 
-// matchesFlatpakApp reports whether the process at pid belongs to a Flatpak
-// whose app ID is one of ids (case-insensitive).
-func matchesFlatpakApp(pid int, ids []string) bool {
+// matchesProcessScope reports whether the process at pid runs in a desktop app
+// scope (see appScopeIDs) matching one of names, or in a Flatpak whose app ID
+// is one of flatpakIDs (case-insensitive).
+func matchesProcessScope(pid int, names, flatpakIDs []string) bool {
 	pidPath := "/proc/" + strconv.Itoa(pid)
 
+	cg, err := os.ReadFile(pidPath + "/cgroup")
+	if err == nil && matchesAppID(appScopeIDs(string(cg)), names) {
+		return true
+	}
+	if len(flatpakIDs) == 0 {
+		return false
+	}
+
 	id := ""
-	if cg, err := os.ReadFile(pidPath + "/cgroup"); err == nil {
+	if err == nil {
 		id = flatpakAppFromCgroup(string(cg))
 	}
 	if id == "" {
@@ -163,12 +301,91 @@ func matchesFlatpakApp(pid int, ids []string) bool {
 	if id == "" {
 		return false
 	}
-	for _, target := range ids {
+	for _, target := range flatpakIDs {
 		if strings.EqualFold(id, target) {
 			return true
 		}
 	}
 	return false
+}
+
+// appScopeIDs returns the candidate app IDs of the desktop app units in
+// /proc/<pid>/cgroup content. Units are named
+// "app-[<launcher>-]<ID>-<random>.scope" or "app-[<launcher>-]<ID>[@<random>].service";
+// since the launcher part is optional, both "<launcher>-<ID>" and "<ID>" are
+// returned, with systemd's \xNN escapes decoded.
+func appScopeIDs(content string) []string {
+	var ids []string
+	for _, line := range strings.Split(content, "\n") {
+		// Each line is "hierarchy-ID:controllers:path".
+		i := strings.LastIndexByte(line, ':')
+		if i < 0 {
+			continue
+		}
+		for _, elem := range strings.Split(line[i+1:], "/") {
+			if !strings.HasPrefix(elem, "app-") {
+				continue
+			}
+			mid := ""
+			switch {
+			case strings.HasSuffix(elem, ".scope"):
+				mid = strings.TrimSuffix(elem[len("app-"):], ".scope")
+				dash := strings.LastIndexByte(mid, '-')
+				if dash <= 0 {
+					continue
+				}
+				mid = mid[:dash] // drop "-<random>"
+			case strings.HasSuffix(elem, ".service"):
+				mid = strings.TrimSuffix(elem[len("app-"):], ".service")
+				if at := strings.IndexByte(mid, '@'); at >= 0 {
+					mid = mid[:at]
+				}
+			default:
+				continue
+			}
+			if mid == "" {
+				continue
+			}
+			ids = append(ids, unescapeUnit(mid))
+			if dash := strings.IndexByte(mid, '-'); dash > 0 && dash < len(mid)-1 {
+				ids = append(ids, unescapeUnit(mid[dash+1:]))
+			}
+		}
+	}
+	return ids
+}
+
+// matchesAppID reports whether one of ids equals one of names, or ends in
+// "." followed by one (case-insensitive): "net.lutris.Lutris" matches "lutris".
+func matchesAppID(ids, names []string) bool {
+	for _, id := range ids {
+		last := id[strings.LastIndexByte(id, '.')+1:]
+		for _, name := range names {
+			if strings.EqualFold(id, name) || strings.EqualFold(last, name) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// unescapeUnit decodes systemd unit-name escapes ("\x2d" → "-").
+func unescapeUnit(s string) string {
+	if !strings.Contains(s, `\x`) {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+3 < len(s) && s[i+1] == 'x' {
+			if v, err := strconv.ParseUint(s[i+2:i+4], 16, 8); err == nil {
+				b.WriteByte(byte(v))
+				i += 3
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
 }
 
 // flatpakAppFromCgroup extracts the app ID from /proc/<pid>/cgroup content,

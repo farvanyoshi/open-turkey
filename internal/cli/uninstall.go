@@ -13,8 +13,8 @@
 //     browser policies stayed in place with no tool left to remove them.
 //
 // The Makefile's uninstall target runs this command FIRST. It:
-//   - refuses (non-zero exit) if any locked block is active, so uninstalling
-//     can't bypass a lock; and
+//   - refuses (non-zero exit) if any block is held (locked, or in or about to
+//     enter a schedule window), so uninstalling can't bypass a lock; and
 //   - otherwise deactivates all blocks and removes every blocking layer, so the
 //     system is left clean.
 //
@@ -45,22 +45,27 @@ var prepareUninstallCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		blocks, err := database.ListBlocks()
+		if err != nil {
+			return err
+		}
 
-		// Refuse while any block is held (char-locked, time-locked, or in a
-		// scheduled window) — uninstalling must not be a way around a lock.
+		// Refuse while any block is held (char-locked, time-locked, or in or
+		// about to enter a scheduled window) — uninstalling must not be a way
+		// around a lock. Inactive blocks are checked too, for upcoming windows.
 		now := time.Now()
 		var held []string
-		for _, b := range active {
-			hold, err := blockHold(database, b.BlockName, now)
+		for _, b := range blocks {
+			hold, err := blockHold(database, b.Name, now)
 			if err != nil {
 				return err
 			}
 			if hold.held() {
-				held = append(held, b.BlockName)
+				held = append(held, b.Name)
 			}
 		}
 		if len(held) > 0 {
-			return fmt.Errorf("cannot uninstall: held block(s) still active: %v. Clear the hold first (unlock, or wait for a time lock / schedule window to end)", held)
+			return fmt.Errorf("cannot uninstall: held block(s): %v. Clear the hold first (unlock, or wait for a time lock / schedule window to end; schedules hold from %s before their window opens)", held, freezeLead())
 		}
 
 		// Deactivate everything so the daemon (and this command) leave nothing

@@ -5,25 +5,19 @@ import (
 	"testing"
 )
 
-func TestWordList(t *testing.T) {
-	if len(wordList) < 500 {
-		t.Fatalf("wordList has %d words; want at least 500 so challenges stay unpredictable", len(wordList))
+func TestCharClasses(t *testing.T) {
+	if len(letters) != 52 || len(digits) != 10 {
+		t.Errorf("letters/digits have %d/%d characters; want 52/10", len(letters), len(digits))
 	}
-	seen := make(map[string]bool, len(wordList))
-	for _, w := range wordList {
-		if len(w) < 3 || len(w) > 8 {
-			t.Errorf("word %q has length %d; want 3-8", w, len(w))
+	// Every printable ASCII character except space is in exactly one class.
+	all := letters + digits + symbols
+	for c := byte('!'); c <= '~'; c++ {
+		if n := strings.Count(all, string(c)); n != 1 {
+			t.Errorf("character %q appears %d times across the classes; want 1", c, n)
 		}
-		for _, r := range w {
-			if r < 'a' || r > 'z' {
-				t.Errorf("word %q contains %q; want lowercase a-z only", w, r)
-				break
-			}
-		}
-		if seen[w] {
-			t.Errorf("duplicate word %q", w)
-		}
-		seen[w] = true
+	}
+	if len(all) != int('~'-'!'+1) {
+		t.Errorf("classes hold %d characters; want %d", len(all), '~'-'!'+1)
 	}
 }
 
@@ -33,18 +27,45 @@ func TestGenerateChallengeShape(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GenerateChallenge(%d) error: %v", n, err)
 		}
-		// Whole words are added until the length is reached, so it may run
-		// over by at most one word plus its space.
-		if len(c) < n || len(c) > n+9 {
-			t.Errorf("GenerateChallenge(%d) length = %d; want %d..%d", n, len(c), n, n+9)
+		if len(c) != n {
+			t.Errorf("GenerateChallenge(%d) length = %d", n, len(c))
 		}
-		if strings.Contains(c, "  ") || strings.HasPrefix(c, " ") || strings.HasSuffix(c, " ") {
-			t.Errorf("challenge %q has stray spaces", c)
-		}
-		for _, w := range strings.Split(c, " ") {
-			if !contains(wordList, w) {
-				t.Fatalf("challenge word %q is not in wordList", w)
+		for i := 0; i < len(c); i++ {
+			if c[i] <= ' ' || c[i] > '~' {
+				t.Fatalf("challenge has non-printable or space character %q", c[i])
 			}
+		}
+	}
+}
+
+// TestGenerateChallengeWeights checks the class mix is roughly 60/35/5. With
+// 200k samples the standard deviation is ~0.1 percentage points, so ±1 point
+// never fails by chance.
+func TestGenerateChallengeWeights(t *testing.T) {
+	const n = 200000
+	c, err := GenerateChallenge(n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var l, d, s int
+	for i := 0; i < len(c); i++ {
+		switch {
+		case strings.IndexByte(letters, c[i]) >= 0:
+			l++
+		case strings.IndexByte(digits, c[i]) >= 0:
+			d++
+		default:
+			s++
+		}
+	}
+	for _, x := range []struct {
+		name string
+		got  int
+		want float64
+	}{{"letters", l, 60}, {"digits", d, 35}, {"symbols", s, 5}} {
+		pct := float64(x.got) * 100 / n
+		if pct < x.want-1 || pct > x.want+1 {
+			t.Errorf("%s are %.2f%% of the challenge; want %.0f%% ± 1", x.name, pct, x.want)
 		}
 	}
 }
@@ -120,22 +141,17 @@ func TestReportAccuracyThreshold(t *testing.T) {
 }
 
 func TestSplitLines(t *testing.T) {
-	text := "alpha beta gamma delta epsilon zeta eta theta"
-	lines := splitLines(text, 16)
-	for _, l := range lines {
-		if len(l) > 16 {
-			t.Errorf("line %q is longer than 16", l)
-		}
-		if strings.HasPrefix(l, " ") || strings.HasSuffix(l, " ") {
-			t.Errorf("line %q has edge spaces", l)
-		}
+	text := "aB3$eF7&iJ1!mN"
+	lines := splitLines(text, 5)
+	want := []string{"aB3$e", "F7&iJ", "1!mN"}
+	if strings.Join(lines, "|") != strings.Join(want, "|") {
+		t.Errorf("splitLines = %q; want %q", lines, want)
 	}
-	if strings.Join(lines, " ") != text {
-		t.Errorf("splitting changed the content: %q", lines)
+	if got := splitLines("abcde", 5); len(got) != 1 || got[0] != "abcde" {
+		t.Errorf("splitLines exact width = %q", got)
 	}
-	// A word wider than the limit gets its own line instead of being cut.
-	if got := splitLines("a verylongword b", 5); len(got) != 3 || got[1] != "verylongword" {
-		t.Errorf("splitLines with an overlong word = %q", got)
+	if got := splitLines("", 5); len(got) != 0 {
+		t.Errorf("splitLines empty = %q", got)
 	}
 }
 
@@ -160,13 +176,4 @@ func TestMinLockChars(t *testing.T) {
 	if DefaultLockChars < MinLockChars {
 		t.Errorf("DefaultLockChars (%d) must be >= MinLockChars (%d)", DefaultLockChars, MinLockChars)
 	}
-}
-
-func contains(list []string, s string) bool {
-	for _, v := range list {
-		if v == s {
-			return true
-		}
-	}
-	return false
 }

@@ -94,3 +94,33 @@ func TestFormatRoundTrip(t *testing.T) {
 		t.Errorf("FormatMinutes(540) = %q; want 09:00", FormatMinutes(540))
 	}
 }
+
+func TestActiveWithin(t *testing.T) {
+	// Monday 09:00–17:00.
+	w := Window{Days: Monday, Start: 9 * 60, End: 17 * 60}
+	mon := func(h, m, s int) time.Time { return time.Date(2026, 9, 28, h, m, s, 0, time.Local) } // a Monday
+	cases := []struct {
+		t    time.Time
+		lead time.Duration
+		want bool
+	}{
+		{mon(8, 29, 0), EditFreeze, false}, // 31 minutes out
+		{mon(8, 30, 0), EditFreeze, true},  // exactly 30 minutes out
+		{mon(8, 59, 59), EditFreeze, true},
+		{mon(12, 0, 0), EditFreeze, true}, // inside the window
+		{mon(16, 59, 0), 0, true},
+		{mon(17, 0, 0), EditFreeze, false},                  // closed
+		{mon(12, 0, 0).AddDate(0, 0, 1), EditFreeze, false}, // Tuesday
+	}
+	for _, c := range cases {
+		if got := w.ActiveWithin(c.t, c.lead); got != c.want {
+			t.Errorf("ActiveWithin(%s, %s) = %v; want %v", c.t.Format("Mon 15:04:05"), c.lead, got, c.want)
+		}
+	}
+
+	// A window starting at midnight is reached from the previous evening.
+	tue := Window{Days: Tuesday, Start: 0, End: 60}
+	if !tue.ActiveWithin(mon(23, 45, 0), EditFreeze) {
+		t.Error("Tuesday 00:00 window should be within 30 minutes of Monday 23:45")
+	}
+}

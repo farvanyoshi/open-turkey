@@ -48,6 +48,24 @@ func (w Window) ActiveAt(t time.Time) bool {
 	return m >= w.Start && m < w.End
 }
 
+// EditFreeze is how long before a window opens that its block is frozen: the
+// CLI refuses edits that could weaken it (changing its lists or mode, removing
+// the schedule or the block) from this lead time until the window closes, so
+// a block can't be gutted moments before it is due to start.
+const EditFreeze = 30 * time.Minute
+
+// ActiveWithin reports whether the window is open at any instant in
+// [t, t+lead]. Windows have minute granularity, so checking each minute in the
+// range is exact.
+func (w Window) ActiveWithin(t time.Time, lead time.Duration) bool {
+	for d := time.Duration(0); d <= lead; d += time.Minute {
+		if w.ActiveAt(t.Add(d)) {
+			return true
+		}
+	}
+	return false
+}
+
 // dayNames maps the abbreviations users type to day bits.
 var dayNames = map[string]int{
 	"sun": Sunday, "mon": Monday, "tue": Tuesday, "wed": Wednesday,

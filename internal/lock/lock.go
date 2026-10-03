@@ -4,22 +4,23 @@
 //
 // This package is the only interactive way to unlock an active locked block.
 // The idea is friction: when you're tempted to reach something blocked, the
-// system makes you transcribe a long run of random words.
+// system makes you transcribe a long run of random characters.
 //
 // === WHY DOES THIS WORK? ===
 //
 // It isn't cryptographic security — a determined user with root can always get
 // around Open Turkey. The point is PSYCHOLOGICAL: the tedious transcription
-// gives the impulse time to pass. The friction should come from TIME, not from
-// luck, so the challenge is designed to be reliably finishable:
+// gives the impulse time to pass. The friction comes from TIME and attention:
 //
-//   - The text is common lowercase words in a random order (crypto/rand), so it
-//     is easy to read and type but can't be anticipated or memorized.
+//   - The text is random printable ASCII (crypto/rand): mostly letters of both
+//     cases, a lot of digits and a sprinkle of symbols (see randomChar), so it
+//     can't be read as words, anticipated or memorized, and keeps the hands
+//     moving between Shift, the number row and the symbol keys.
 //   - It is typed one line at a time with visible, colored echo and working
 //     Backspace, so typos can be seen and fixed.
 //   - Scoring is by edit distance with a MinAccuracy threshold, so a few typos
-//     don't throw away minutes of work, and a skipped letter costs one error
-//     instead of misaligning everything after it.
+//     don't throw away minutes of work, and a skipped character costs one
+//     error instead of misaligning everything after it.
 //
 // To keep that friction real, the challenge is hard to skip:
 //
@@ -41,9 +42,9 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// DefaultLockChars is the default challenge length in characters. 600
-// characters is ~110 words, about three minutes of typing for most people —
-// long enough for an impulse to pass.
+// DefaultLockChars is the default challenge length in characters. 600 random
+// characters takes most people well over five minutes to transcribe — long
+// enough for an impulse to pass.
 const DefaultLockChars = 600
 
 // MinLockChars is the smallest challenge length we allow. It stops a lock from
@@ -74,29 +75,68 @@ const (
 	ansiClearLine = "\r\x1b[2K"
 )
 
-// GenerateChallenge returns random words from wordList, separated by single
-// spaces, adding whole words until the text is at least length characters.
+// Character classes for the challenge. symbols is every printable ASCII
+// character on a US keyboard that isn't a letter, digit or space.
+const (
+	letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	digits  = "0123456789"
+	symbols = "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~"
+)
+
+// Class weights, in percent: a letter 60% of the time, a digit 35%, a symbol
+// 5%. Within a class every character is equally likely.
+const (
+	letterWeight = 60
+	digitWeight  = 35
+	symbolWeight = 5
+)
+
+// GenerateChallenge returns length random characters drawn by randomChar.
 // It errors on a non-positive length.
 func GenerateChallenge(length int) (string, error) {
 	if length <= 0 {
 		return "", fmt.Errorf("challenge length must be positive, got %d", length)
 	}
 
-	listSize := big.NewInt(int64(len(wordList)))
-	var builder strings.Builder
-
-	for builder.Len() < length {
-		index, err := rand.Int(rand.Reader, listSize)
+	out := make([]byte, length)
+	for i := range out {
+		c, err := randomChar()
 		if err != nil {
-			return "", fmt.Errorf("failed to pick a random word: %w", err)
+			return "", fmt.Errorf("failed to pick a random character: %w", err)
 		}
-		if builder.Len() > 0 {
-			builder.WriteByte(' ')
-		}
-		builder.WriteString(wordList[index.Int64()])
+		out[i] = c
 	}
+	return string(out), nil
+}
 
-	return builder.String(), nil
+// randomChar picks a class by the weights above, then a character uniformly
+// from that class, both with crypto/rand.
+func randomChar() (byte, error) {
+	roll, err := randInt(letterWeight + digitWeight + symbolWeight)
+	if err != nil {
+		return 0, err
+	}
+	class := symbols
+	switch {
+	case roll < letterWeight:
+		class = letters
+	case roll < letterWeight+digitWeight:
+		class = digits
+	}
+	i, err := randInt(len(class))
+	if err != nil {
+		return 0, err
+	}
+	return class[i], nil
+}
+
+// randInt returns a uniform random integer in [0, n) from crypto/rand.
+func randInt(n int) (int, error) {
+	v, err := rand.Int(rand.Reader, big.NewInt(int64(n)))
+	if err != nil {
+		return 0, err
+	}
+	return int(v.Int64()), nil
 }
 
 // RunChallenge generates a challenge, has the user type it, and reports
@@ -281,7 +321,7 @@ func renderTyped(typed []byte, target string) string {
 func runChallengeLine(challenge string) (bool, error) {
 	fmt.Println(strings.Join(splitLines(challenge, maxLineWidth), "\n"))
 	fmt.Println()
-	fmt.Printf("Type the text above on one line (%.0f%% accuracy needed): ", MinAccuracy*100)
+	fmt.Printf("Type the text above on one line, without the line breaks (%.0f%% accuracy needed): ", MinAccuracy*100)
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
 
@@ -360,24 +400,17 @@ func editDistance(a, b string) int {
 	return prev[len(b)]
 }
 
-// splitLines breaks space-separated text into lines of at most width
-// characters, breaking only between words. A word longer than width gets a
-// line to itself.
+// splitLines breaks text into consecutive lines of width characters (the last
+// may be shorter). The challenge has no spaces to break on, and a fixed width
+// keeps every line the same size.
 func splitLines(text string, width int) []string {
 	var lines []string
-	var current strings.Builder
-	for _, word := range strings.Fields(text) {
-		if current.Len() > 0 && current.Len()+1+len(word) > width {
-			lines = append(lines, current.String())
-			current.Reset()
-		}
-		if current.Len() > 0 {
-			current.WriteByte(' ')
-		}
-		current.WriteString(word)
+	for len(text) > width {
+		lines = append(lines, text[:width])
+		text = text[width:]
 	}
-	if current.Len() > 0 {
-		lines = append(lines, current.String())
+	if text != "" {
+		lines = append(lines, text)
 	}
 	return lines
 }
