@@ -2,6 +2,7 @@ package db
 
 import (
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -71,8 +72,8 @@ func TestFeaturesRoundTrip(t *testing.T) {
 		t.Errorf("active detail wrong: %+v", active[0])
 	}
 
-	// Remove schedule by id.
-	if err := d.RemoveSchedule("focus", all[0].ID); err != nil {
+	// Remove schedule by number.
+	if err := d.RemoveSchedule("focus", 1); err != nil {
 		t.Fatal(err)
 	}
 	if s, _ := d.ListSchedules("focus"); len(s) != 0 {
@@ -98,5 +99,67 @@ func TestCreateBlockRejectsBadMode(t *testing.T) {
 	b, _ := d.GetBlock("y")
 	if b.Mode != ModeBlocklist {
 		t.Errorf("default mode = %q; want blocklist", b.Mode)
+	}
+}
+
+// TestScheduleNumbering checks that schedules are numbered 1..n per block, that
+// removing one renumbers the later ones down, and that a new one takes the
+// lowest free number.
+func TestScheduleNumbering(t *testing.T) {
+	d, err := OpenDB(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	for _, name := range []string{"a", "b"} {
+		if err := d.CreateBlock(name, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Interleave blocks so row IDs aren't contiguous per block.
+	for _, start := range []int{60, 120, 180} {
+		if err := d.AddSchedule("a", 0x7f, start, start+30); err != nil {
+			t.Fatal(err)
+		}
+		if err := d.AddSchedule("b", 0x7f, start, start+30); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	starts := func(name string) (nums, mins []int) {
+		t.Helper()
+		ss, err := d.ListSchedules(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, s := range ss {
+			nums = append(nums, s.Num)
+			mins = append(mins, s.StartMin)
+		}
+		return
+	}
+
+	if nums, _ := starts("b"); !reflect.DeepEqual(nums, []int{1, 2, 3}) {
+		t.Fatalf("block b numbers = %v; want [1 2 3]", nums)
+	}
+
+	if err := d.RemoveSchedule("a", 2); err != nil {
+		t.Fatal(err)
+	}
+	if nums, mins := starts("a"); !reflect.DeepEqual(nums, []int{1, 2}) || !reflect.DeepEqual(mins, []int{60, 180}) {
+		t.Fatalf("after removing 2: nums=%v mins=%v; want [1 2] [60 180]", nums, mins)
+	}
+	if err := d.AddSchedule("a", 0x7f, 300, 330); err != nil {
+		t.Fatal(err)
+	}
+	if nums, mins := starts("a"); !reflect.DeepEqual(nums, []int{1, 2, 3}) || mins[2] != 300 {
+		t.Fatalf("after add: nums=%v mins=%v; want new schedule as 3", nums, mins)
+	}
+	if err := d.RemoveSchedule("a", 4); err == nil {
+		t.Error("removing a nonexistent number should error")
+	}
+	if nums, _ := starts("b"); len(nums) != 3 {
+		t.Errorf("block b affected by edits to a: %v", nums)
 	}
 }

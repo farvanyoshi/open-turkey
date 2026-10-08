@@ -136,6 +136,8 @@ open-turkey schedule list social-media
 open-turkey schedule remove social-media 1
 ```
 
+Schedules are numbered `1, 2, 3, …` per block. Removing one moves the later ones down a number (remove `1` from `1, 2, 3` and the old `2`/`3` become `1`/`2`), and a new schedule takes the next number.
+
 Windows are same-day; for an overnight span (e.g. 17:00–05:00) add two windows (`17:00–23:59` and `00:00–05:00`). From **30 minutes before** a schedule's window opens until it closes, that schedule **can't be removed** — otherwise deleting it would end the block early or stop it from starting, defeating the point. Schedules whose windows aren't open or about to open can still be removed at any time, and you can always add new ones.
 
 During that same period (30 minutes before any of a block's windows until it closes) the block itself is frozen: its sites, apps, patterns and mode can't be changed, and it can't be removed.

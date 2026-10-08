@@ -2,7 +2,10 @@
 //
 //	open-turkey schedule add <block> --days weekdays --from 09:00 --to 17:00
 //	open-turkey schedule list <block>
-//	open-turkey schedule remove <block> <id>
+//	open-turkey schedule remove <block> <number>
+//
+// Schedules are numbered 1..n per block; removing one renumbers the later
+// ones down, and a new schedule takes the next (lowest free) number.
 //
 // While a scheduled window is open, the daemon keeps the block active and the
 // CLI refuses to stop/unlock it (see blockHold). "schedule remove" likewise
@@ -73,7 +76,11 @@ var scheduleAddCmd = &cobra.Command{
 		if err := database.AddSchedule(name, days, start, end); err != nil {
 			return err
 		}
-		fmt.Printf("Schedule added to '%s': %s %s-%s\n", name, schedule.FormatDays(days), fromSpec, toSpec)
+		schedules, err := database.ListSchedules(name)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Schedule %d added to '%s': %s %s-%s\n", len(schedules), name, schedule.FormatDays(days), fromSpec, toSpec)
 		return nil
 	},
 }
@@ -100,7 +107,7 @@ var scheduleListCmd = &cobra.Command{
 		}
 		fmt.Printf("Schedules for '%s':\n", name)
 		for _, s := range schedules {
-			fmt.Printf("  [%d] %s %s-%s\n", s.ID, schedule.FormatDays(s.DaysMask),
+			fmt.Printf("  [%d] %s %s-%s\n", s.Num, schedule.FormatDays(s.DaysMask),
 				schedule.FormatMinutes(s.StartMin), schedule.FormatMinutes(s.EndMin))
 		}
 		return nil
@@ -108,14 +115,14 @@ var scheduleListCmd = &cobra.Command{
 }
 
 var scheduleRemoveCmd = &cobra.Command{
-	Use:   "remove [block] [id]",
-	Short: "Remove a schedule from a block by its id",
+	Use:   "remove [block] [number]",
+	Short: "Remove a schedule from a block by its number (later ones are renumbered)",
 	Args:  cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := args[0]
-		id, err := strconv.Atoi(args[1])
+		num, err := strconv.Atoi(args[1])
 		if err != nil {
-			return fmt.Errorf("invalid schedule id %q", args[1])
+			return fmt.Errorf("invalid schedule number %q", args[1])
 		}
 		database, err := openDB()
 		if err != nil {
@@ -128,25 +135,19 @@ var scheduleRemoveCmd = &cobra.Command{
 		// would make the daemon deactivate it, or never activate it. So a
 		// schedule whose window is open or opens within schedule.EditFreeze
 		// can't be removed; other schedules still can.
-		schedules, err := database.ListSchedules(name)
+		s, err := database.GetSchedule(name, num)
 		if err != nil {
 			return err
 		}
-		for _, s := range schedules {
-			if s.ID != id {
-				continue
-			}
-			w := schedule.Window{Days: s.DaysMask, Start: s.StartMin, End: s.EndMin}
-			if w.ActiveWithin(time.Now(), schedule.EditFreeze) {
-				return fmt.Errorf("schedule %d for '%s' is in its window or starts within %s, and can't be removed until the window closes", id, name, freezeLead())
-			}
-			break
+		w := schedule.Window{Days: s.DaysMask, Start: s.StartMin, End: s.EndMin}
+		if w.ActiveWithin(time.Now(), schedule.EditFreeze) {
+			return fmt.Errorf("schedule %d for '%s' is in its window or starts within %s, and can't be removed until the window closes", num, name, freezeLead())
 		}
 
-		if err := database.RemoveSchedule(name, id); err != nil {
+		if err := database.RemoveSchedule(name, num); err != nil {
 			return err
 		}
-		fmt.Printf("Schedule %d removed from '%s'.\n", id, name)
+		fmt.Printf("Schedule %d removed from '%s'.\n", num, name)
 		return nil
 	},
 }

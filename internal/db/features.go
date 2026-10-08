@@ -175,8 +175,15 @@ func (d *DB) RemovePatterns(blockName string, patterns []string) error {
 // --------------------------------------------------------------------------
 
 // Schedule is one recurring window attached to a block.
+//
+// Num is the number shown to the user: the schedule's 1-based position among
+// its block's schedules (in creation order). It is derived, not stored, so the
+// numbers are always 1..n with no gaps: a new schedule takes n+1, the lowest
+// free number, and removing one shifts every later one down by one. ID is the
+// internal row ID and is never shown.
 type Schedule struct {
 	ID        int
+	Num       int
 	BlockName string
 	DaysMask  int
 	StartMin  int
@@ -216,7 +223,7 @@ func (d *DB) ListSchedules(blockName string) ([]Schedule, error) {
 
 	var out []Schedule
 	for rows.Next() {
-		s := Schedule{BlockName: blockName}
+		s := Schedule{BlockName: blockName, Num: len(out) + 1}
 		if err := rows.Scan(&s.ID, &s.DaysMask, &s.StartMin, &s.EndMin); err != nil {
 			return nil, fmt.Errorf("failed to read schedule: %w", err)
 		}
@@ -250,19 +257,28 @@ func (d *DB) AllSchedules() ([]Schedule, error) {
 	return out, rows.Err()
 }
 
-// RemoveSchedule deletes one schedule from a block (by the block-scoped ID
-// shown in "schedule list").
-func (d *DB) RemoveSchedule(blockName string, id int) error {
-	blockID, err := d.getBlockID(blockName)
+// GetSchedule returns a block's schedule by its number (Num, as shown in
+// "schedule list").
+func (d *DB) GetSchedule(blockName string, num int) (Schedule, error) {
+	schedules, err := d.ListSchedules(blockName)
+	if err != nil {
+		return Schedule{}, err
+	}
+	if num < 1 || num > len(schedules) {
+		return Schedule{}, fmt.Errorf("schedule %d not found in block '%s'", num, blockName)
+	}
+	return schedules[num-1], nil
+}
+
+// RemoveSchedule deletes one schedule from a block by its number (Num, as
+// shown in "schedule list"). Later schedules move down one number.
+func (d *DB) RemoveSchedule(blockName string, num int) error {
+	s, err := d.GetSchedule(blockName, num)
 	if err != nil {
 		return err
 	}
-	result, err := d.conn.Exec("DELETE FROM schedules WHERE id = ? AND block_id = ?", id, blockID)
-	if err != nil {
-		return fmt.Errorf("failed to remove schedule %d from block '%s': %w", id, blockName, err)
-	}
-	if n, _ := result.RowsAffected(); n == 0 {
-		return fmt.Errorf("schedule %d not found in block '%s'", id, blockName)
+	if _, err := d.conn.Exec("DELETE FROM schedules WHERE id = ?", s.ID); err != nil {
+		return fmt.Errorf("failed to remove schedule %d from block '%s': %w", num, blockName, err)
 	}
 	return nil
 }

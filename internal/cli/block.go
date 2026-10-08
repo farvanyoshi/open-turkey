@@ -576,7 +576,7 @@ var blockInfoCmd = &cobra.Command{
 			fmt.Println()
 			fmt.Println("Schedules:")
 			for _, s := range schedules {
-				fmt.Printf("  [%d] %s %s-%s\n", s.ID, scheduleFormatDays(s.DaysMask),
+				fmt.Printf("  [%d] %s %s-%s\n", s.Num, scheduleFormatDays(s.DaysMask),
 					scheduleFormatMinutes(s.StartMin), scheduleFormatMinutes(s.EndMin))
 			}
 		}
