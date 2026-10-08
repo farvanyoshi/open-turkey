@@ -599,6 +599,28 @@ func (d *DB) ActivateBlock(name string, locked bool, lockChars int, lockedUntil 
 	return nil
 }
 
+// StrengthenLocks updates an active block's locks in place (the "scheduled"
+// flag is kept). The caller (start on an active block) only ever passes values
+// at least as strong as the current ones: a char lock can be added or
+// lengthened, and a time lock added or extended, but never the reverse.
+func (d *DB) StrengthenLocks(name string, locked bool, lockChars int, lockedUntil int64) error {
+	blockID, err := d.getBlockID(name)
+	if err != nil {
+		return err
+	}
+	result, err := d.conn.Exec(
+		"UPDATE active_blocks SET locked = ?, lock_chars = ?, locked_until = ? WHERE block_id = ?",
+		locked, lockChars, lockedUntil, blockID,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to update locks of block '%s': %w", name, err)
+	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		return fmt.Errorf("block '%s' is not active", name)
+	}
+	return nil
+}
+
 // DeactivateBlock removes the block from the active blocks table.
 // If the block isn't active, it returns an error.
 func (d *DB) DeactivateBlock(name string) error {

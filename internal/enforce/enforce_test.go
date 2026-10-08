@@ -63,6 +63,58 @@ func TestReconcileSchedules(t *testing.T) {
 	}
 }
 
+// TestReconcileKeepsLockedScheduledBlock checks that a schedule-activated
+// block that was then locked isn't deactivated when its window closes: a time
+// lock holds it until it expires, a char lock until it is unlocked.
+func TestReconcileKeepsLockedScheduledBlock(t *testing.T) {
+	d, err := db.OpenDB(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	if err := d.CreateBlock("s", db.ModeBlocklist); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.AddSchedule("s", schedule.Window{Days: 0x7f, Start: 9 * 60, End: 17 * 60}); err != nil {
+		t.Fatal(err)
+	}
+	day := func(h int) time.Time { return time.Date(2024, 1, 1, h, 0, 0, 0, time.Local) }
+
+	if err := reconcileSchedules(d, day(10)); err != nil {
+		t.Fatal(err)
+	}
+	// Time-locked until 19:00 while in the window.
+	if err := d.StrengthenLocks("s", false, 0, day(19).Unix()); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		h    int
+		want bool
+	}{{18, true}, {20, false}} {
+		if err := reconcileSchedules(d, day(c.h)); err != nil {
+			t.Fatal(err)
+		}
+		if b, _ := d.GetBlock("s"); b.Active != c.want {
+			t.Errorf("time lock: at %02d:00 active = %v; want %v", c.h, b.Active, c.want)
+		}
+	}
+
+	// Char-locked while in the window: stays on after it closes.
+	if err := reconcileSchedules(d, day(10).AddDate(0, 0, 1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.StrengthenLocks("s", true, 300, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := reconcileSchedules(d, day(20).AddDate(0, 0, 1)); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := d.GetBlock("s"); !b.Active || !b.Scheduled {
+		t.Errorf("char-locked scheduled block should stay active; got active=%v scheduled=%v", b.Active, b.Scheduled)
+	}
+}
+
 // TestReconcileAllowSchedule checks allow windows: the block is on outside
 // them and off inside them.
 func TestReconcileAllowSchedule(t *testing.T) {
@@ -150,5 +202,33 @@ func TestInputsAllowlist(t *testing.T) {
 	}
 	if len(bp.AllowDomains) != 2 {
 		t.Errorf("AllowDomains = %v; want 2 entries", bp.AllowDomains)
+	}
+}
+
+// TestInputsAllowlistsIntersect checks that stacked allowlist blocks narrow
+// what is allowed instead of widening it.
+func TestInputsAllowlistsIntersect(t *testing.T) {
+	cases := []struct {
+		a, b, want []string
+	}{
+		{[]string{"work.com"}, []string{"work.com", "youtube.com"}, []string{"work.com"}},
+		{[]string{"google.com"}, []string{"docs.google.com"}, []string{"docs.google.com"}},
+		{[]string{"google.com", "work.com"}, []string{"google.com", "docs.google.com"}, []string{"docs.google.com", "google.com"}},
+		{[]string{"work.com"}, []string{"youtube.com"}, []string{}},
+		{[]string{"evil.com"}, []string{"notevil.com"}, []string{}}, // suffix without a dot isn't a parent
+	}
+	for _, c := range cases {
+		active := []db.ActiveBlockDetail{
+			{BlockName: "a", Mode: db.ModeAllowlist, Sites: c.a},
+			{BlockName: "b", Mode: db.ModeAllowlist, Sites: c.b},
+			{BlockName: "c", Mode: db.ModeBlocklist, Sites: []string{"x.com"}},
+		}
+		_, _, bp := Inputs(active)
+		if !bp.AllowMode {
+			t.Fatal("AllowMode should be on")
+		}
+		if !reflect.DeepEqual(bp.AllowDomains, c.want) {
+			t.Errorf("%v ∩ %v = %v; want %v", c.a, c.b, bp.AllowDomains, c.want)
+		}
 	}
 }

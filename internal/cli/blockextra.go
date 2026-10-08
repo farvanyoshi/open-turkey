@@ -66,7 +66,9 @@ var blockAddPatternCmd = &cobra.Command{
 		}
 		defer database.Close()
 
-		if err := ensureEditable(database, name); err != nil {
+		// Patterns are blocked in both modes, so adding one only strengthens
+		// the block.
+		if err := ensureEditable(database, name, true); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
@@ -97,7 +99,7 @@ var blockRemovePatternCmd = &cobra.Command{
 		}
 		defer database.Close()
 
-		if err := ensureEditable(database, name); err != nil {
+		if err := ensureEditable(database, name, false); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
@@ -127,7 +129,7 @@ var blockSetModeCmd = &cobra.Command{
 		}
 		defer database.Close()
 
-		if err := ensureEditable(database, name); err != nil {
+		if err := ensureEditable(database, name, false); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}

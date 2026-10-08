@@ -31,14 +31,18 @@ check that everything compiles: `CGO_ENABLED=0 go build ./...`.
   `app-[<launcher>-]<ID>-<n>.scope`/`@….service` whose ID is or ends in `.<name>`); every
   descendant of a matched process is killed too, except under shells/session processes. Domain
   validation (`validate.go`) guards against `/etc/hosts` injection.
-- **Enforce** (`internal/enforce/`): turns the active blocks into layer inputs;
-  `Apply` (CLI, on state change) and `Tick` (daemon, per cycle: schedule
-  reconciliation + drift-only reapply). Single source of truth so CLI and daemon
-  agree.
+- **Enforce** (`internal/enforce/`): turns the active blocks into layer inputs
+  (blocklists/apps/patterns unioned, allowlists intersected, so stacking blocks
+  never weakens one); `Apply` (CLI, on state change) and `Tick` (daemon, per
+  cycle: schedule reconciliation + drift-only reapply). Single source of truth
+  so CLI and daemon agree.
 - **Schedule** (`internal/schedule/`): pure time logic for recurring windows
   (block windows, or `--allow` windows that keep a block on except while open);
   `EditFreeze` (30 min) is the lead time before a window during which the CLI
-  refuses edits/removals of that block or schedule.
+  refuses weakening edits/removals of that block or schedule.
+- **Holds** (`internal/cli/`): `blockHold` decides whether a block is held;
+  `ensureEditable` refuses only edits that would weaken a held block, and
+  `start` on an active block can only strengthen its locks.
 - **Daemon** (`internal/daemon/`): systemd service, calls `enforce.Tick` every 5s.
 - **DB** (`internal/db/`): SQLite at `/var/lib/open-turkey/open-turkey.db` (WAL);
   `OPEN_TURKEY_DB` overrides the path (tests only; the unit never sets it).

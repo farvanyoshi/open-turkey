@@ -18,6 +18,11 @@
 //     the hold starts schedule.EditFreeze (30 minutes) before the window
 //     opens, so a block can't be emptied just before it is due to start.
 //
+// Locks can be strengthened while held ("start" on an active block adds or
+// lengthens a char lock and adds or extends a time lock), never weakened. A
+// lock added to a block its schedule activated outlives the schedule: the
+// daemon won't deactivate a locked block (see enforce.reconcileSchedules).
+//
 // All of these are enforced centrally by blockHold so start/stop/unlock/edit and
 // uninstall agree on when a block may be removed.
 package cli
@@ -25,6 +30,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/brunodcdo/open-turkey/internal/db"
@@ -48,7 +54,12 @@ Locks (optional, and combinable):
   --for DURATION    Time lock: cannot be removed for this long (e.g. 2h, 90m, 1h30m).
   --until HH:MM     Time lock until a clock time today (or tomorrow if already past).
 
-A time lock cannot be lifted early by anyone short of root — that is the point.`,
+A time lock cannot be lifted early by anyone short of root — that is the point.
+
+On a block that is already active, start only strengthens its locks: --lock
+adds a char lock (or lengthens it with a larger --lock-chars), and --for or
+--until adds a time lock or extends it to a later time. Locks can never be
+shortened or removed this way.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		blockName := args[0]
@@ -112,7 +123,7 @@ A time lock cannot be lifted early by anyone short of root — that is the point
 			return fmt.Errorf("block '%s' has nothing to enforce. Add sites, apps or patterns first", blockName)
 		}
 		if detail.Active {
-			return fmt.Errorf("block '%s' is already active", blockName)
+			return strengthenLocks(database, detail, useLock, lockChars, cmd.Flags().Changed("lock-chars"), lockedUntil)
 		}
 
 		chars := 0
@@ -138,6 +149,48 @@ A time lock cannot be lifted early by anyone short of root — that is the point
 		notify("Open Turkey", fmt.Sprintf("Block '%s' is now active", blockName))
 		return nil
 	},
+}
+
+// strengthenLocks handles "start" on a block that is already active: it can add
+// or lengthen a char lock and add or extend a time lock, but refuses anything
+// that would weaken the current locks. This is safe on a held block, since it
+// can only make the hold stronger.
+func strengthenLocks(database *db.DB, detail *db.BlockDetail, useLock bool, lockChars int, charsGiven bool, lockedUntil int64) error {
+	name := detail.Name
+	if !useLock && lockedUntil == 0 {
+		return fmt.Errorf("block '%s' is already active (use --lock, --for or --until to strengthen its locks)", name)
+	}
+
+	locked, chars, until := detail.Locked, detail.LockChars, detail.LockedUntil
+	var changes []string
+	if useLock {
+		switch {
+		case !locked:
+			locked, chars = true, lockChars
+			changes = append(changes, fmt.Sprintf("LOCKED - %d chars", chars))
+		case lockChars > chars && charsGiven:
+			chars = lockChars
+			changes = append(changes, fmt.Sprintf("challenge lengthened to %d chars", chars))
+		case lockChars < chars && charsGiven:
+			return fmt.Errorf("block '%s' is already locked with a %d-character challenge; it can't be shortened", name, chars)
+		}
+	}
+	if lockedUntil != 0 {
+		if lockedUntil <= until {
+			return fmt.Errorf("block '%s' is already time-locked until %s; a time lock can only be extended", name, time.Unix(until, 0).Format("2006-01-02 15:04"))
+		}
+		until = lockedUntil
+		changes = append(changes, fmt.Sprintf("TIME-LOCKED until %s", time.Unix(until, 0).Format("2006-01-02 15:04")))
+	}
+	if len(changes) == 0 {
+		return fmt.Errorf("block '%s' is already active with those locks", name)
+	}
+
+	if err := database.StrengthenLocks(name, locked, chars, until); err != nil {
+		return err
+	}
+	fmt.Printf("Block '%s' strengthened: %s\n", name, strings.Join(changes, ", "))
+	return nil
 }
 
 // ============================================================================

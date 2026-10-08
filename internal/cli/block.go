@@ -19,6 +19,9 @@
 //   - open-turkey block list
 //   - open-turkey block info [name]
 //   - open-turkey block remove [name]
+//
+// A held block (locked, time-locked or held by its schedule) only accepts
+// edits that make it stricter; see ensureEditable.
 package cli
 
 import (
@@ -64,28 +67,66 @@ func openDB() (*db.DB, error) {
 	return db.OpenDB(path)
 }
 
-// ensureEditable refuses edits to a block that is active and locked.
+// ensureEditable refuses edits that would weaken a held block.
 //
-// A locked block is meant to be immovable until it is unlocked (via the typing
-// challenge, or a time lock's expiry). Allowing its site/app lists to be edited
-// would be a trivial bypass: emptying a block deactivates it, and even trimming
-// entries weakens a lock the user set precisely so they couldn't weaken it on
-// impulse. So every edit command goes through this guard.
-//
+// A held block (char-locked, time-locked, or held by its schedule) is meant to
+// be immovable until the hold lifts. Allowing its lists to be trimmed would be
+// a trivial bypass: emptying a block deactivates it, and even removing entries
+// weakens a hold the user set precisely so they couldn't weaken it on impulse.
 // The same applies from schedule.EditFreeze before a schedule window opens:
 // otherwise a block could be emptied minutes before it is due to start.
-func ensureEditable(database *db.DB, name string) error {
+//
+// Edits that can only make the block stricter (strengthens) are always
+// allowed, held or not: adding sites to a blocklist block, removing sites from
+// an allowlist block (without emptying it), and adding apps or patterns. Every
+// other edit (removals, mode changes, deleting the block) passes false.
+func ensureEditable(database *db.DB, name string, strengthens bool) error {
+	if strengthens {
+		return nil
+	}
 	hold, err := blockHold(database, name, time.Now())
 	if err != nil {
 		return err
 	}
 	if hold.held() {
 		if hold.scheduleFrozen && !hold.active {
-			return fmt.Errorf("block '%s' is held by its schedule now or within %s, and cannot be edited until its schedule lifts it", name, freezeLead())
+			return fmt.Errorf("block '%s' is held by its schedule now or within %s; until its schedule lifts it, it can only be made stricter (%s)", name, freezeLead(), strengtheningEdits)
 		}
-		return fmt.Errorf("block '%s' is currently held (locked, time-locked or in a scheduled window) and cannot be edited. Remove the hold first", name)
+		return fmt.Errorf("block '%s' is currently held (locked, time-locked or by its schedule); until the hold lifts, it can only be made stricter (%s)", name, strengtheningEdits)
 	}
 	return nil
+}
+
+// strengtheningEdits lists, for error messages, the edits a held block allows.
+const strengtheningEdits = "add apps or patterns, add sites to a blocklist, remove sites from an allowlist, or extend its locks with 'start'"
+
+// siteEditStrengthens reports whether adding (or removing) the given sites
+// can only make the block stricter: adding to a blocklist, or removing from an
+// allowlist as long as the block keeps something to enforce (an emptied
+// active block is deactivated, which would be a bypass).
+func siteEditStrengthens(detail *db.BlockDetail, domains []string, adding bool) bool {
+	if detail.Mode != db.ModeAllowlist {
+		return adding
+	}
+	if adding {
+		return false
+	}
+	removing := map[string]bool{}
+	for _, d := range domains {
+		removing[d] = true
+	}
+	left := 0
+	for _, s := range detail.Sites {
+		if !removing[s] {
+			left++
+		}
+	}
+	return !isEmpty(left, len(detail.Apps), len(detail.Patterns))
+}
+
+// isEmpty reports whether a block with these counts has nothing to enforce.
+func isEmpty(sites, apps, patterns int) bool {
+	return sites == 0 && apps == 0 && patterns == 0
 }
 
 // freezeLead renders schedule.EditFreeze for messages ("30 minutes").
@@ -231,7 +272,12 @@ var blockAddSiteCmd = &cobra.Command{
 		}
 		defer database.Close()
 
-		if err := ensureEditable(database, name); err != nil {
+		detail, err := database.GetBlock(name)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		if err := ensureEditable(database, name, siteEditStrengthens(detail, domains, true)); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
@@ -284,7 +330,12 @@ var blockRemoveSiteCmd = &cobra.Command{
 		}
 		defer database.Close()
 
-		if err := ensureEditable(database, name); err != nil {
+		detail, err := database.GetBlock(name)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		if err := ensureEditable(database, name, siteEditStrengthens(detail, domains, false)); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
@@ -309,7 +360,7 @@ var blockRemoveSiteCmd = &cobra.Command{
 				os.Exit(1)
 			}
 
-			if len(detail.Sites) == 0 && len(detail.Apps) == 0 {
+			if isEmpty(len(detail.Sites), len(detail.Apps), len(detail.Patterns)) {
 				if err := database.DeactivateBlock(name); err != nil {
 					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 					os.Exit(1)
@@ -351,7 +402,9 @@ var blockAddAppCmd = &cobra.Command{
 		}
 		defer database.Close()
 
-		if err := ensureEditable(database, name); err != nil {
+		// Blocked apps are killed in both modes, so adding one only
+		// strengthens the block.
+		if err := ensureEditable(database, name, true); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
@@ -399,7 +452,7 @@ var blockRemoveAppCmd = &cobra.Command{
 		}
 		defer database.Close()
 
-		if err := ensureEditable(database, name); err != nil {
+		if err := ensureEditable(database, name, false); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
@@ -421,7 +474,7 @@ var blockRemoveAppCmd = &cobra.Command{
 				os.Exit(1)
 			}
 
-			if len(detail.Sites) == 0 && len(detail.Apps) == 0 {
+			if isEmpty(len(detail.Sites), len(detail.Apps), len(detail.Patterns)) {
 				if err := database.DeactivateBlock(name); err != nil {
 					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 					os.Exit(1)
@@ -607,7 +660,7 @@ var blockRemoveCmd = &cobra.Command{
 		}
 		defer database.Close()
 
-		if err := ensureEditable(database, name); err != nil {
+		if err := ensureEditable(database, name, false); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}

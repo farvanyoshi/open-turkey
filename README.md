@@ -51,12 +51,13 @@ The installed program is independent of the source directory — once installed,
 ## Concepts
 
 - **Block**: a set of sites/apps (and optional browser patterns) you block together. A block is either a **blocklist** (block its sites) or an **allowlist** (`--allowlist`: block everything *except* its sites, enforced at the browser layer).
+- **Overlapping blocks**: several blocks can be active at once, and stacking them never weakens any of them. Blocklist sites, apps and patterns from every active block are all enforced. Allowlists are **intersected**: with two allowlist blocks active, a site is reachable only if *both* allow it (an entry also allows its subdomains, so `google.com` and `docs.google.com` together allow just `docs.google.com`). To make things stricter while a block is held, you can start another block alongside it or strengthen the held one (see below).
 - **Active**: a block currently in effect (the system is enforcing it).
 - **Character lock (`--lock`)**: prevents `stop`. The only way out is `unlock`, which shows a string of random characters and requires typing all of it in one go, with at least 98% accuracy (at most 6 errors in the default 300 characters). Mistakes aren't highlighted (Backspace works, but you have to spot them yourself), paste is rejected, and `--lock-chars` sets the length (default 300 characters, several minutes of typing) — deliberate friction to outlast an impulse. Each character is a letter (upper or lower case) 60% of the time, a digit 35% of the time and a symbol 5% of the time; symbols can be any printable ASCII symbol on a US keyboard (`` !"#$%&'()*+,-./:;<=>?@[\]^_`{|}~ ``).
 - **Time lock (`--for` / `--until`)**: the block cannot be removed *at all* — not even with the challenge — until the time passes. The strongest lock.
-- **Schedule**: recurring windows (e.g. weekdays 09:00–17:00). The daemon turns the block on when a window opens and off when it closes; while a window is open the block can't be stopped. With **allow windows** it's the other way round: the block is on at all times *except* during its allow windows (e.g. allow games only on Friday and Saturday evenings). Starting **30 minutes before** a window opens, the block is frozen: it can't be edited or removed, and that schedule can't be removed, until the window closes.
+- **Schedule**: recurring windows (e.g. weekdays 09:00–17:00). The daemon turns the block on when a window opens and off when it closes; while a window is open the block can't be stopped. With **allow windows** it's the other way round: the block is on at all times *except* during its allow windows (e.g. allow games only on Friday and Saturday evenings). Starting **30 minutes before** a window opens, the block is frozen: it can't be weakened or removed (only made stricter), and that schedule can't be removed, until the window closes.
 
-While a block is *held* (char-locked, time-locked, in a schedule window, or within 30 minutes of one opening) it also can't be edited or removed, and `make uninstall` refuses. Everything is friction, not a security boundary — a determined root user can always recover (see the threat-model note above).
+While a block is *held* (char-locked, time-locked, in a schedule window, or within 30 minutes of one opening) it can't be removed or weakened, and `make uninstall` refuses. It can still be made **stricter**: see [Strengthening a held block](#strengthening-a-held-block). Everything is friction, not a security boundary — a determined root user can always recover (see the threat-model note above).
 
 ## Commands
 
@@ -150,7 +151,7 @@ Windows are same-day; for an overnight span (e.g. 17:00–05:00) add two windows
 
 For allow windows the same rule applies in reverse: you can't add an allow window that would open now or within 30 minutes, nor remove a block's **last** allow window while the block is on (or due on within 30 minutes). Removing one of several allow windows is always allowed, since it only makes the block stricter.
 
-Whenever its schedule has the block on, or will within 30 minutes, the block itself is frozen: its sites, apps, patterns and mode can't be changed, and it can't be removed. For an allow-window block that means it can only be edited during an allow window (with more than 30 minutes of it left).
+Whenever its schedule has the block on, or will within 30 minutes, the block itself is frozen: it can't be weakened (removing apps or patterns, changing its mode, …) or removed, though it can still be made stricter (see [Strengthening a held block](#strengthening-a-held-block)). For an allow-window block that means it can only be loosened during an allow window (with more than 30 minutes of it left).
 
 Show status:
 
@@ -188,7 +189,26 @@ open-turkey block remove-site social-media instagram.com
 Notes:
 
 - If the block is **active**, Open Turkey re-applies the layers so the change takes effect immediately.
-- If the block is **held** (character-locked, time-locked, in an open schedule window, or within 30 minutes of one opening), you **cannot** edit its sites/apps/patterns/mode. Clear the hold first (unlock, or wait for the time lock / schedule window to end), make your changes, then activate again.
+- If the block is **held** (character-locked, time-locked, in an open schedule window, or within 30 minutes of one opening), you **cannot** loosen it: removing apps or patterns, removing sites from a blocklist, adding sites to an allowlist, and changing its mode are refused. Clear the hold first (unlock, or wait for the time lock / schedule window to end), make your changes, then activate again. Edits that only make it stricter are always allowed (next section).
+
+#### Strengthening a held block
+
+A held block can always be made stricter, since that can't be used to escape it:
+
+| Allowed while held | Why it's safe |
+|---|---|
+| `block add-app`, `block add-pattern` | apps and patterns are blocked in both modes |
+| `block add-site` on a **blocklist** block | blocks more sites |
+| `block remove-site` on an **allowlist** block | allows fewer sites — refused if it would leave the block with nothing at all, since an empty block is switched off |
+| `start <block> --lock [--lock-chars N]` on an **active** block | adds a char lock, or lengthens the challenge (a shorter `--lock-chars` is refused) |
+| `start <block> --for D` / `--until HH:MM` on an **active** block | adds a time lock, or extends it (an earlier end is refused) |
+
+```bash
+open-turkey start social-media --for 3h       # already active: extend its time lock
+open-turkey block add-site social-media reddit.com
+```
+
+If you lock a block that its schedule switched on, the lock outlives the schedule: when the window closes, a time-locked block stays on until its time lock expires (the daemon then switches it off), and a char-locked one stays on until you `unlock` it.
 
 Remove an app (process) from a block:
 
