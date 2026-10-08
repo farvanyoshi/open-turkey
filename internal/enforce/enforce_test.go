@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/brunodcdo/open-turkey/internal/db"
+	"github.com/brunodcdo/open-turkey/internal/schedule"
 )
 
 // TestReconcileSchedules checks the daemon's scheduling core (no layers, so no
@@ -27,7 +28,7 @@ func TestReconcileSchedules(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Every day, 09:00–17:00.
-	if err := d.AddSchedule("s", 0x7f, 9*60, 17*60); err != nil {
+	if err := d.AddSchedule("s", schedule.Window{Days: 0x7f, Start: 9 * 60, End: 17 * 60}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -59,6 +60,49 @@ func TestReconcileSchedules(t *testing.T) {
 	}
 	if b, _ := d.GetBlock("s"); !b.Active {
 		t.Fatal("manual activation must survive schedule reconciliation")
+	}
+}
+
+// TestReconcileAllowSchedule checks allow windows: the block is on outside
+// them and off inside them.
+func TestReconcileAllowSchedule(t *testing.T) {
+	d, err := db.OpenDB(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	if err := d.CreateBlock("games", db.ModeBlocklist); err != nil {
+		t.Fatal(err)
+	}
+	// Allowed Friday and Saturday 18:00–24:00.
+	if err := d.AddSchedule("games", schedule.Window{Days: schedule.Friday | schedule.Saturday, Start: 18 * 60, End: 24 * 60, Allow: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	fri := func(h, m int) time.Time { return time.Date(2024, 1, 5, h, m, 0, 0, time.Local) } // a Friday
+	steps := []struct {
+		t    time.Time
+		want bool
+	}{
+		{fri(12, 0), true},                   // Friday afternoon: blocked
+		{fri(18, 0), false},                  // allow window open
+		{fri(23, 59), false},                 // still open up to midnight
+		{fri(12, 0).AddDate(0, 0, 2), true},  // Sunday: blocked
+		{fri(20, 0).AddDate(0, 0, 1), false}, // Saturday evening
+		{fri(20, 0).AddDate(0, 0, 3), true},  // Monday evening: blocked
+	}
+	for _, st := range steps {
+		if err := reconcileSchedules(d, st.t); err != nil {
+			t.Fatal(err)
+		}
+		b, _ := d.GetBlock("games")
+		if b.Active != st.want {
+			t.Errorf("%s: active = %v; want %v", st.t.Format("Mon 15:04"), b.Active, st.want)
+		}
+		if on, _ := ScheduleActiveNow(d, "games", st.t); on != st.want {
+			t.Errorf("%s: ScheduleActiveNow = %v; want %v", st.t.Format("Mon 15:04"), on, st.want)
+		}
 	}
 }
 

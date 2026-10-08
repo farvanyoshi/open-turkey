@@ -3,10 +3,14 @@
 // whether a window is active right now).
 //
 // A window is a set of weekdays plus a start and end time-of-day. Windows are
-// same-day only (start must be before end); an overnight span like 22:00–06:00
-// is expressed as two windows. Keeping it same-day avoids ambiguous
-// "which day does the mask refer to" logic and keeps the daemon's decision
-// trivial to reason about.
+// same-day only (start must be before end; the end may be 24:00); an overnight
+// span like 22:00–06:00 is expressed as two windows. Keeping it same-day avoids
+// ambiguous "which day does the mask refer to" logic and keeps the daemon's
+// decision trivial to reason about.
+//
+// A window is either a block window (the block is on while it is open) or an
+// allow window (the block is on at all times except while one is open). See
+// Enforced.
 package schedule
 
 import (
@@ -31,12 +35,23 @@ const (
 	AllDays  = Weekdays | Weekend
 )
 
-// Window is a recurring block window: the days it applies and the minute-of-day
+// Window is a recurring window: the days it applies and the minute-of-day
 // range [Start, End) it covers.
 type Window struct {
-	Days  int // bitmask of day constants
-	Start int // minutes since midnight, inclusive
-	End   int // minutes since midnight, exclusive
+	Days  int  // bitmask of day constants
+	Start int  // minutes since midnight, inclusive
+	End   int  // minutes since midnight, exclusive (up to 1440, i.e. 24:00)
+	Allow bool // allow window (a gap in an always-on block) instead of a block window
+}
+
+// String renders the window as shown to users, e.g. "weekdays 09:00-17:00" or
+// "allow fri,sat 18:00-24:00".
+func (w Window) String() string {
+	s := fmt.Sprintf("%s %s-%s", FormatDays(w.Days), FormatMinutes(w.Start), FormatMinutes(w.End))
+	if w.Allow {
+		s = "allow " + s
+	}
+	return s
 }
 
 // ActiveAt reports whether the window covers the instant t.
@@ -46,6 +61,52 @@ func (w Window) ActiveAt(t time.Time) bool {
 	}
 	m := t.Hour()*60 + t.Minute()
 	return m >= w.Start && m < w.End
+}
+
+// Enforced reports whether a block with the windows ws should be on at t: when
+// any block window is open, or when it has allow windows and none of them is
+// open. A block with no windows is never enforced by its schedule.
+func Enforced(ws []Window, t time.Time) bool {
+	hasAllow, inAllow := false, false
+	for _, w := range ws {
+		if !w.Allow {
+			if w.ActiveAt(t) {
+				return true
+			}
+			continue
+		}
+		hasAllow = true
+		if w.ActiveAt(t) {
+			inAllow = true
+		}
+	}
+	return hasAllow && !inAllow
+}
+
+// EnforcedWithin reports whether Enforced(ws, ·) holds at any instant in
+// [t, t+lead] (exact, since windows have minute granularity).
+func EnforcedWithin(ws []Window, t time.Time, lead time.Duration) bool {
+	for d := time.Duration(0); d <= lead; d += time.Minute {
+		if Enforced(ws, t.Add(d)) {
+			return true
+		}
+	}
+	return false
+}
+
+// Weakens reports whether replacing the windows from with to would leave the
+// block off at some instant in [t, t+lead] when it would otherwise be on. The
+// CLI refuses such schedule changes (adding an allow window, removing a block
+// window or the last allow window) within EditFreeze, so changing a schedule
+// can't end a block early or keep it from starting.
+func Weakens(from, to []Window, t time.Time, lead time.Duration) bool {
+	for d := time.Duration(0); d <= lead; d += time.Minute {
+		at := t.Add(d)
+		if Enforced(from, at) && !Enforced(to, at) {
+			return true
+		}
+	}
+	return false
 }
 
 // EditFreeze is how long before a window opens that its block is frozen: the
@@ -193,6 +254,15 @@ func ParseTimeOfDay(s string) (int, error) {
 		return 0, fmt.Errorf("invalid minute in %q", s)
 	}
 	return h*60 + m, nil
+}
+
+// ParseEndTime is ParseTimeOfDay for a window's end, which may also be "24:00"
+// (the end of the day), so a window can run up to midnight with no gap.
+func ParseEndTime(s string) (int, error) {
+	if strings.TrimSpace(s) == "24:00" {
+		return 24 * 60, nil
+	}
+	return ParseTimeOfDay(s)
 }
 
 // FormatMinutes renders minutes-since-midnight as "HH:MM".

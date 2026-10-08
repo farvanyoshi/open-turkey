@@ -81,7 +81,7 @@ func ensureEditable(database *db.DB, name string) error {
 	}
 	if hold.held() {
 		if hold.scheduleFrozen && !hold.active {
-			return fmt.Errorf("block '%s' has a schedule window that is open or starts within %s, and cannot be edited until that window closes", name, freezeLead())
+			return fmt.Errorf("block '%s' is held by its schedule now or within %s, and cannot be edited until its schedule lifts it", name, freezeLead())
 		}
 		return fmt.Errorf("block '%s' is currently held (locked, time-locked or in a scheduled window) and cannot be edited. Remove the hold first", name)
 	}
@@ -576,8 +576,7 @@ var blockInfoCmd = &cobra.Command{
 			fmt.Println()
 			fmt.Println("Schedules:")
 			for _, s := range schedules {
-				fmt.Printf("  [%d] %s %s-%s\n", s.Num, scheduleFormatDays(s.DaysMask),
-					scheduleFormatMinutes(s.StartMin), scheduleFormatMinutes(s.EndMin))
+				fmt.Printf("  [%d] %s\n", s.Num, s.Window())
 			}
 		}
 	},

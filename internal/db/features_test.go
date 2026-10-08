@@ -3,6 +3,8 @@ package db
 import (
 	"path/filepath"
 	"reflect"
+
+	"github.com/brunodcdo/open-turkey/internal/schedule"
 	"testing"
 )
 
@@ -28,7 +30,7 @@ func TestFeaturesRoundTrip(t *testing.T) {
 	if err := d.AddPatterns("focus", []string{"*ads*", "*casino*"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.AddSchedule("focus", 0x3e /*weekdays*/, 540, 1020); err != nil {
+	if err := d.AddSchedule("focus", schedule.Window{Days: 0x3e, Start: 540, End: 1020}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -52,8 +54,17 @@ func TestFeaturesRoundTrip(t *testing.T) {
 	}
 
 	// Schedules visible per-block and globally.
-	if s, _ := d.ListSchedules("focus"); len(s) != 1 {
-		t.Errorf("ListSchedules = %d; want 1", len(s))
+	if s, _ := d.ListSchedules("focus"); len(s) != 1 || s[0].Allow {
+		t.Errorf("ListSchedules = %+v; want 1 block window", s)
+	}
+	if err := d.AddSchedule("focus", schedule.Window{Days: 0x60, Start: 1080, End: 1440, Allow: true}); err != nil {
+		t.Fatal(err)
+	}
+	if s, _ := d.ListSchedules("focus"); len(s) != 2 || !s[1].Allow || s[1].EndMin != 1440 {
+		t.Errorf("allow window not stored: %+v", s)
+	}
+	if err := d.RemoveSchedule("focus", 2); err != nil {
+		t.Fatal(err)
 	}
 	all, _ := d.AllSchedules()
 	if len(all) != 1 || all[0].BlockName != "focus" {
@@ -119,10 +130,10 @@ func TestScheduleNumbering(t *testing.T) {
 	}
 	// Interleave blocks so row IDs aren't contiguous per block.
 	for _, start := range []int{60, 120, 180} {
-		if err := d.AddSchedule("a", 0x7f, start, start+30); err != nil {
+		if err := d.AddSchedule("a", schedule.Window{Days: 0x7f, Start: start, End: start + 30}); err != nil {
 			t.Fatal(err)
 		}
-		if err := d.AddSchedule("b", 0x7f, start, start+30); err != nil {
+		if err := d.AddSchedule("b", schedule.Window{Days: 0x7f, Start: start, End: start + 30}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -150,7 +161,7 @@ func TestScheduleNumbering(t *testing.T) {
 	if nums, mins := starts("a"); !reflect.DeepEqual(nums, []int{1, 2}) || !reflect.DeepEqual(mins, []int{60, 180}) {
 		t.Fatalf("after removing 2: nums=%v mins=%v; want [1 2] [60 180]", nums, mins)
 	}
-	if err := d.AddSchedule("a", 0x7f, 300, 330); err != nil {
+	if err := d.AddSchedule("a", schedule.Window{Days: 0x7f, Start: 300, End: 330}); err != nil {
 		t.Fatal(err)
 	}
 	if nums, mins := starts("a"); !reflect.DeepEqual(nums, []int{1, 2, 3}) || mins[2] != 300 {

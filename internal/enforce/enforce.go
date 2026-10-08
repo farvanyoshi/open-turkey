@@ -149,9 +149,10 @@ func Tick(d *db.DB, now time.Time) error {
 	return nil
 }
 
-// reconcileSchedules activates blocks whose window is open and deactivates the
-// scheduled ones whose window has closed. Manually-activated blocks are never
-// auto-deactivated.
+// reconcileSchedules activates blocks their schedule enforces right now (see
+// schedule.Enforced: a block window is open, or no allow window is) and
+// deactivates the scheduled ones it no longer enforces. Manually-activated
+// blocks are never auto-deactivated.
 func reconcileSchedules(d *db.DB, now time.Time) error {
 	all, err := d.AllSchedules()
 	if err != nil {
@@ -164,19 +165,11 @@ func reconcileSchedules(d *db.DB, now time.Time) error {
 	// Group windows by block.
 	windows := map[string][]schedule.Window{}
 	for _, s := range all {
-		windows[s.BlockName] = append(windows[s.BlockName], schedule.Window{
-			Days: s.DaysMask, Start: s.StartMin, End: s.EndMin,
-		})
+		windows[s.BlockName] = append(windows[s.BlockName], s.Window())
 	}
 
 	for name, ws := range windows {
-		within := false
-		for _, w := range ws {
-			if w.ActiveAt(now) {
-				within = true
-				break
-			}
-		}
+		within := schedule.Enforced(ws, now)
 
 		detail, err := d.GetBlock(name)
 		if err != nil {
@@ -187,55 +180,43 @@ func reconcileSchedules(d *db.DB, now time.Time) error {
 		switch {
 		case within && !detail.Active:
 			// Activate as a scheduled block (not char-locked, but the CLI
-			// refuses to stop it while the window is open).
+			// refuses to stop it while the schedule enforces it).
 			if err := d.ActivateBlock(name, false, 0, 0, true); err != nil {
 				log.Printf("daemon: schedule: failed to activate %s: %v", name, err)
 			} else {
-				log.Printf("daemon: schedule: activated %s (window open)", name)
+				log.Printf("daemon: schedule: activated %s", name)
 			}
 		case !within && detail.Active && detail.Scheduled:
 			if err := d.DeactivateBlock(name); err != nil {
 				log.Printf("daemon: schedule: failed to deactivate %s: %v", name, err)
 			} else {
-				log.Printf("daemon: schedule: deactivated %s (window closed)", name)
+				log.Printf("daemon: schedule: deactivated %s", name)
 			}
 		}
 	}
 	return nil
 }
 
-// ScheduleActiveNow reports whether any of a block's schedule windows covers
-// now. The CLI uses it to refuse stopping/unlocking a scheduled block while its
-// window is open.
+// ScheduleActiveNow reports whether a block's schedule enforces it now (see
+// schedule.Enforced). The CLI uses it to refuse stopping/unlocking a scheduled
+// block while that holds.
 func ScheduleActiveNow(d *db.DB, blockName string, now time.Time) (bool, error) {
 	schedules, err := d.ListSchedules(blockName)
 	if err != nil {
 		return false, err
 	}
-	for _, s := range schedules {
-		w := schedule.Window{Days: s.DaysMask, Start: s.StartMin, End: s.EndMin}
-		if w.ActiveAt(now) {
-			return true, nil
-		}
-	}
-	return false, nil
+	return schedule.Enforced(db.Windows(schedules), now), nil
 }
 
-// ScheduleFrozen reports whether any of a block's schedule windows is open now
-// or opens within schedule.EditFreeze. The CLI refuses edits that could weaken
-// the block while this holds, whether or not the block is active yet.
+// ScheduleFrozen reports whether a block's schedule enforces it now or at any
+// point within schedule.EditFreeze. The CLI refuses edits that could weaken the
+// block while this holds, whether or not the block is active yet.
 func ScheduleFrozen(d *db.DB, blockName string, now time.Time) (bool, error) {
 	schedules, err := d.ListSchedules(blockName)
 	if err != nil {
 		return false, err
 	}
-	for _, s := range schedules {
-		w := schedule.Window{Days: s.DaysMask, Start: s.StartMin, End: s.EndMin}
-		if w.ActiveWithin(now, schedule.EditFreeze) {
-			return true, nil
-		}
-	}
-	return false, nil
+	return schedule.EnforcedWithin(db.Windows(schedules), now, schedule.EditFreeze), nil
 }
 
 func dedup(in []string) []string {

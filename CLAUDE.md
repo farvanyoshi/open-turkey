@@ -35,7 +35,8 @@ check that everything compiles: `CGO_ENABLED=0 go build ./...`.
   `Apply` (CLI, on state change) and `Tick` (daemon, per cycle: schedule
   reconciliation + drift-only reapply). Single source of truth so CLI and daemon
   agree.
-- **Schedule** (`internal/schedule/`): pure time logic for recurring windows;
+- **Schedule** (`internal/schedule/`): pure time logic for recurring windows
+  (block windows, or `--allow` windows that keep a block on except while open);
   `EditFreeze` (30 min) is the lead time before a window during which the CLI
   refuses edits/removals of that block or schedule.
 - **Daemon** (`internal/daemon/`): systemd service, calls `enforce.Tick` every 5s.
@@ -60,7 +61,7 @@ Full usage and examples in `README.md`. Summary:
 `block create [--allowlist] [--template T] | add-site | add-app | remove-site |
 remove-app | add-pattern | remove-pattern | set-mode | export | import | list |
 info | remove`, `start [--lock] [--lock-chars N] [--for D | --until HH:MM]`,
-`stop`, `unlock`, `status`, `schedule add|list|remove`, and the hidden
+`stop`, `unlock`, `status`, `schedule add [--allow]|list|remove`, and the hidden
 `prepare-uninstall` (run by `make uninstall`).
 
 `./try-challenge.sh [length]` (source: `cmd/try-challenge/`) builds and runs the

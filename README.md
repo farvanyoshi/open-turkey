@@ -54,7 +54,7 @@ The installed program is independent of the source directory — once installed,
 - **Active**: a block currently in effect (the system is enforcing it).
 - **Character lock (`--lock`)**: prevents `stop`. The only way out is `unlock`, which shows a string of random characters and requires typing all of it in one go, with at least 98% accuracy (at most 6 errors in the default 300 characters). Mistakes aren't highlighted (Backspace works, but you have to spot them yourself), paste is rejected, and `--lock-chars` sets the length (default 300 characters, several minutes of typing) — deliberate friction to outlast an impulse. Each character is a letter (upper or lower case) 60% of the time, a digit 35% of the time and a symbol 5% of the time; symbols can be any printable ASCII symbol on a US keyboard (`` !"#$%&'()*+,-./:;<=>?@[\]^_`{|}~ ``).
 - **Time lock (`--for` / `--until`)**: the block cannot be removed *at all* — not even with the challenge — until the time passes. The strongest lock.
-- **Schedule**: recurring windows (e.g. weekdays 09:00–17:00). The daemon turns the block on when a window opens and off when it closes; while a window is open the block can't be stopped. Starting **30 minutes before** a window opens, the block is frozen: it can't be edited or removed, and that schedule can't be removed, until the window closes.
+- **Schedule**: recurring windows (e.g. weekdays 09:00–17:00). The daemon turns the block on when a window opens and off when it closes; while a window is open the block can't be stopped. With **allow windows** it's the other way round: the block is on at all times *except* during its allow windows (e.g. allow games only on Friday and Saturday evenings). Starting **30 minutes before** a window opens, the block is frozen: it can't be edited or removed, and that schedule can't be removed, until the window closes.
 
 While a block is *held* (char-locked, time-locked, in a schedule window, or within 30 minutes of one opening) it also can't be edited or removed, and `make uninstall` refuses. Everything is friction, not a security boundary — a determined root user can always recover (see the threat-model note above).
 
@@ -136,11 +136,21 @@ open-turkey schedule list social-media
 open-turkey schedule remove social-media 1
 ```
 
+Allow windows invert this: the block is on at all times **except** while one of its allow windows is open. For example, to allow a `games` block only on Friday and Saturday evenings:
+
+```bash
+open-turkey schedule add games --allow --days fri,sat --from 18:00 --to 24:00
+```
+
+A block's schedules must be all block windows or all allow windows. `--to 24:00` means midnight, so a window can run to the end of the day without a one-minute gap.
+
 Schedules are numbered `1, 2, 3, …` per block. Removing one moves the later ones down a number (remove `1` from `1, 2, 3` and the old `2`/`3` become `1`/`2`), and a new schedule takes the next number.
 
-Windows are same-day; for an overnight span (e.g. 17:00–05:00) add two windows (`17:00–23:59` and `00:00–05:00`). From **30 minutes before** a schedule's window opens until it closes, that schedule **can't be removed** — otherwise deleting it would end the block early or stop it from starting, defeating the point. Schedules whose windows aren't open or about to open can still be removed at any time, and you can always add new ones.
+Windows are same-day; for an overnight span (e.g. 17:00–05:00) add two windows (`17:00–24:00` and `00:00–05:00`). From **30 minutes before** a schedule's window opens until it closes, that schedule **can't be removed** — otherwise deleting it would end the block early or stop it from starting, defeating the point. Schedules whose windows aren't open or about to open can still be removed at any time, and you can always add new block windows.
 
-During that same period (30 minutes before any of a block's windows until it closes) the block itself is frozen: its sites, apps, patterns and mode can't be changed, and it can't be removed.
+For allow windows the same rule applies in reverse: you can't add an allow window that would open now or within 30 minutes, nor remove a block's **last** allow window while the block is on (or due on within 30 minutes). Removing one of several allow windows is always allowed, since it only makes the block stricter.
+
+Whenever its schedule has the block on, or will within 30 minutes, the block itself is frozen: its sites, apps, patterns and mode can't be changed, and it can't be removed. For an allow-window block that means it can only be edited during an allow window (with more than 30 minutes of it left).
 
 Show status:
 

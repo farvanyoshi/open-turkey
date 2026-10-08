@@ -124,3 +124,69 @@ func TestActiveWithin(t *testing.T) {
 		t.Error("Tuesday 00:00 window should be within 30 minutes of Monday 23:45")
 	}
 }
+
+func TestEnforced(t *testing.T) {
+	fri := func(h, m int) time.Time { return time.Date(2024, 1, 5, h, m, 0, 0, time.Local) } // a Friday
+	block := Window{Days: Friday, Start: 9 * 60, End: 17 * 60}
+	allow := Window{Days: Friday | Saturday, Start: 18 * 60, End: 24 * 60, Allow: true}
+
+	if Enforced(nil, fri(12, 0)) {
+		t.Error("no windows should never be enforced")
+	}
+	if !Enforced([]Window{block}, fri(12, 0)) || Enforced([]Window{block}, fri(18, 0)) {
+		t.Error("block window: on inside, off outside")
+	}
+	if !Enforced([]Window{allow}, fri(12, 0)) || Enforced([]Window{allow}, fri(23, 59)) {
+		t.Error("allow window: on outside, off inside (up to 24:00)")
+	}
+	if !Enforced([]Window{allow}, fri(0, 0).AddDate(0, 0, 1)) {
+		t.Error("allow window: Saturday 00:00 is outside it")
+	}
+}
+
+func TestWeakens(t *testing.T) {
+	fri := func(h, m int) time.Time { return time.Date(2024, 1, 5, h, m, 0, 0, time.Local) } // a Friday
+	evening := Window{Days: Friday, Start: 18 * 60, End: 24 * 60, Allow: true}
+	morning := Window{Days: Friday, Start: 8 * 60, End: 9 * 60, Allow: true}
+
+	// Adding an allow window that opens now or within the freeze weakens.
+	if !Weakens([]Window{evening}, []Window{evening, morning}, fri(7, 45), EditFreeze) {
+		t.Error("adding an allow window opening in 15 minutes should weaken")
+	}
+	if Weakens([]Window{evening}, []Window{evening, morning}, fri(7, 0), EditFreeze) {
+		t.Error("adding an allow window opening in an hour shouldn't count")
+	}
+	// The first allow window turns an unscheduled block on: never weaker.
+	if Weakens(nil, []Window{evening}, fri(12, 0), EditFreeze) {
+		t.Error("adding the first allow window shouldn't weaken")
+	}
+	// Removing one of several allow windows only strengthens.
+	if Weakens([]Window{evening, morning}, []Window{evening}, fri(8, 30), EditFreeze) {
+		t.Error("removing an allow window shouldn't weaken")
+	}
+	// Removing the last allow window while the block is on weakens.
+	if !Weakens([]Window{evening}, nil, fri(12, 0), EditFreeze) {
+		t.Error("removing the last allow window while blocked should weaken")
+	}
+	if Weakens([]Window{evening}, nil, fri(19, 0), EditFreeze) {
+		t.Error("removing the last allow window inside it, well before it closes, is fine")
+	}
+}
+
+func TestParseEndTime(t *testing.T) {
+	if m, err := ParseEndTime("24:00"); err != nil || m != 1440 {
+		t.Errorf("ParseEndTime(24:00) = %d, %v", m, err)
+	}
+	if m, err := ParseEndTime("17:30"); err != nil || m != 1050 {
+		t.Errorf("ParseEndTime(17:30) = %d, %v", m, err)
+	}
+	if _, err := ParseEndTime("24:01"); err == nil {
+		t.Error("ParseEndTime(24:01) should error")
+	}
+	if _, err := ParseTimeOfDay("24:00"); err == nil {
+		t.Error("ParseTimeOfDay(24:00) should still error (start times)")
+	}
+	if got := (Window{Days: Friday | Saturday, Start: 1080, End: 1440, Allow: true}).String(); got != "allow fri,sat 18:00-24:00" {
+		t.Errorf("String() = %q", got)
+	}
+}

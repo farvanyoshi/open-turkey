@@ -1,18 +1,24 @@
 // schedule.go — recurring block schedules.
 //
 //	open-turkey schedule add <block> --days weekdays --from 09:00 --to 17:00
+//	open-turkey schedule add <block> --allow --days fri,sat --from 18:00 --to 24:00
 //	open-turkey schedule list <block>
 //	open-turkey schedule remove <block> <number>
 //
+// A block's schedules are either block windows (the block is on while one is
+// open) or allow windows (the block is on at all times except while one is
+// open); a block can't mix the two. While its schedule enforces it, the daemon
+// keeps the block active and the CLI refuses to stop/unlock it (see blockHold).
+//
+// Schedule changes that would leave the block off when it would otherwise be on
+// (removing a block window, adding an allow window, removing the last allow
+// window) are refused if that would take effect now or within
+// schedule.EditFreeze, so they can't be used to end the block early or stop it
+// from starting. Windows are same-day (the end may be 24:00); express an
+// overnight span as two windows.
+//
 // Schedules are numbered 1..n per block; removing one renumbers the later
 // ones down, and a new schedule takes the next (lowest free) number.
-//
-// While a scheduled window is open, the daemon keeps the block active and the
-// CLI refuses to stop/unlock it (see blockHold). "schedule remove" likewise
-// refuses to delete a schedule whose window is open or opens within
-// schedule.EditFreeze, so removing a schedule can't be used to end the block
-// early or stop it from starting. Windows are same-day; express an overnight
-// span as two windows.
 package cli
 
 import (
@@ -20,14 +26,10 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/brunodcdo/open-turkey/internal/db"
 	"github.com/brunodcdo/open-turkey/internal/schedule"
 	"github.com/spf13/cobra"
 )
-
-// Thin wrappers so other cli files can format schedules without importing the
-// schedule package directly.
-func scheduleFormatDays(mask int) string { return schedule.FormatDays(mask) }
-func scheduleFormatMinutes(m int) string { return schedule.FormatMinutes(m) }
 
 var scheduleCmd = &cobra.Command{
 	Use:   "schedule",
@@ -36,13 +38,14 @@ var scheduleCmd = &cobra.Command{
 
 var scheduleAddCmd = &cobra.Command{
 	Use:   "add [block]",
-	Short: "Add a recurring window to a block",
+	Short: "Add a recurring block window (or, with --allow, an allow window) to a block",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := args[0]
 		daysSpec, _ := cmd.Flags().GetString("days")
 		fromSpec, _ := cmd.Flags().GetString("from")
 		toSpec, _ := cmd.Flags().GetString("to")
+		allow, _ := cmd.Flags().GetBool("allow")
 
 		if fromSpec == "" || toSpec == "" {
 			return fmt.Errorf("--from and --to are required (HH:MM)")
@@ -55,13 +58,14 @@ var scheduleAddCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		end, err := schedule.ParseTimeOfDay(toSpec)
+		end, err := schedule.ParseEndTime(toSpec)
 		if err != nil {
 			return err
 		}
 		if start >= end {
 			return fmt.Errorf("--from (%s) must be before --to (%s); for an overnight window add two schedules", fromSpec, toSpec)
 		}
+		w := schedule.Window{Days: days, Start: start, End: end, Allow: allow}
 
 		database, err := openDB()
 		if err != nil {
@@ -69,20 +73,40 @@ var scheduleAddCmd = &cobra.Command{
 		}
 		defer database.Close()
 
-		// Confirm the block exists (GetBlock errors otherwise).
-		if _, err := database.GetBlock(name); err != nil {
-			return err
-		}
-		if err := database.AddSchedule(name, days, start, end); err != nil {
-			return err
-		}
+		// ListSchedules also confirms the block exists.
 		schedules, err := database.ListSchedules(name)
 		if err != nil {
 			return err
 		}
-		fmt.Printf("Schedule %d added to '%s': %s %s-%s\n", len(schedules), name, schedule.FormatDays(days), fromSpec, toSpec)
+		for _, s := range schedules {
+			if s.Allow != allow {
+				return fmt.Errorf("block '%s' has %s windows; a block's schedules must be all block windows or all allow windows", name, kindName(s.Allow))
+			}
+		}
+		// An allow window opens a gap in the block, so it can't be added if
+		// that gap would start now or within schedule.EditFreeze.
+		from := db.Windows(schedules)
+		if schedule.Weakens(from, append(from, w), time.Now(), schedule.EditFreeze) {
+			return fmt.Errorf("that allow window would lift '%s' now or within %s; add it at least %s before it opens", name, freezeLead(), freezeLead())
+		}
+
+		if err := database.AddSchedule(name, w); err != nil {
+			return err
+		}
+		fmt.Printf("Schedule %d added to '%s': %s\n", len(schedules)+1, name, w)
+		if allow && len(schedules) == 0 {
+			fmt.Printf("'%s' will now be on at all times except during its allow windows.\n", name)
+		}
 		return nil
 	},
+}
+
+// kindName names a schedule kind for messages.
+func kindName(allow bool) string {
+	if allow {
+		return "allow"
+	}
+	return "block"
 }
 
 var scheduleListCmd = &cobra.Command{
@@ -107,8 +131,7 @@ var scheduleListCmd = &cobra.Command{
 		}
 		fmt.Printf("Schedules for '%s':\n", name)
 		for _, s := range schedules {
-			fmt.Printf("  [%d] %s %s-%s\n", s.Num, schedule.FormatDays(s.DaysMask),
-				schedule.FormatMinutes(s.StartMin), schedule.FormatMinutes(s.EndMin))
+			fmt.Printf("  [%d] %s\n", s.Num, s.Window())
 		}
 		return nil
 	},
@@ -130,17 +153,25 @@ var scheduleRemoveCmd = &cobra.Command{
 		}
 		defer database.Close()
 
-		// Don't let removing a schedule become a way around its own window:
-		// deleting the schedule that is holding the block (or is about to)
-		// would make the daemon deactivate it, or never activate it. So a
-		// schedule whose window is open or opens within schedule.EditFreeze
-		// can't be removed; other schedules still can.
-		s, err := database.GetSchedule(name, num)
+		// Don't let removing a schedule become a way around it: removing the
+		// block window that is holding the block (or is about to), or the
+		// last allow window while the block is on, would make the daemon
+		// deactivate it, or never activate it. So a removal that would lift
+		// the block now or within schedule.EditFreeze is refused; others are
+		// fine (removing one of several allow windows only strengthens it).
+		schedules, err := database.ListSchedules(name)
 		if err != nil {
 			return err
 		}
-		w := schedule.Window{Days: s.DaysMask, Start: s.StartMin, End: s.EndMin}
-		if w.ActiveWithin(time.Now(), schedule.EditFreeze) {
+		if num < 1 || num > len(schedules) {
+			return fmt.Errorf("schedule %d not found in block '%s'", num, name)
+		}
+		from := db.Windows(schedules)
+		to := append(append([]schedule.Window{}, from[:num-1]...), from[num:]...)
+		if schedule.Weakens(from, to, time.Now(), schedule.EditFreeze) {
+			if from[num-1].Allow {
+				return fmt.Errorf("schedule %d is the last allow window of '%s', which is on now or within %s; it can't be removed until an allow window is open with more than %s left", num, name, freezeLead(), freezeLead())
+			}
 			return fmt.Errorf("schedule %d for '%s' is in its window or starts within %s, and can't be removed until the window closes", num, name, freezeLead())
 		}
 
@@ -155,7 +186,8 @@ var scheduleRemoveCmd = &cobra.Command{
 func init() {
 	scheduleAddCmd.Flags().String("days", "daily", "Days: daily, weekdays, weekends, mon-fri, or mon,wed,fri")
 	scheduleAddCmd.Flags().String("from", "", "Start time HH:MM (required)")
-	scheduleAddCmd.Flags().String("to", "", "End time HH:MM (required)")
+	scheduleAddCmd.Flags().String("to", "", "End time HH:MM, or 24:00 for midnight (required)")
+	scheduleAddCmd.Flags().Bool("allow", false, "Allow window: keep the block on at all times except during its allow windows")
 
 	scheduleCmd.AddCommand(scheduleAddCmd)
 	scheduleCmd.AddCommand(scheduleListCmd)

@@ -10,6 +10,8 @@ package db
 import (
 	"database/sql"
 	"fmt"
+
+	"github.com/brunodcdo/open-turkey/internal/schedule"
 )
 
 // upgradeSchema adds any columns that older databases are missing. New tables
@@ -19,6 +21,7 @@ func upgradeSchema(conn *sql.DB) error {
 		{"blocks", "mode", "TEXT NOT NULL DEFAULT 'blocklist'"},
 		{"active_blocks", "locked_until", "INTEGER NOT NULL DEFAULT 0"},
 		{"active_blocks", "scheduled", "BOOLEAN NOT NULL DEFAULT 0"},
+		{"schedules", "allow", "BOOLEAN NOT NULL DEFAULT 0"},
 	}
 	for _, a := range adds {
 		if err := addColumnIfMissing(conn, a.table, a.col, a.def); err != nil {
@@ -188,17 +191,32 @@ type Schedule struct {
 	DaysMask  int
 	StartMin  int
 	EndMin    int
+	Allow     bool // allow window rather than block window (see schedule.Enforced)
+}
+
+// Window returns the schedule's time window.
+func (s Schedule) Window() schedule.Window {
+	return schedule.Window{Days: s.DaysMask, Start: s.StartMin, End: s.EndMin, Allow: s.Allow}
+}
+
+// Windows returns the time windows of a list of schedules.
+func Windows(schedules []Schedule) []schedule.Window {
+	out := make([]schedule.Window, len(schedules))
+	for i, s := range schedules {
+		out[i] = s.Window()
+	}
+	return out
 }
 
 // AddSchedule attaches a recurring window to a block.
-func (d *DB) AddSchedule(blockName string, daysMask, startMin, endMin int) error {
+func (d *DB) AddSchedule(blockName string, w schedule.Window) error {
 	blockID, err := d.getBlockID(blockName)
 	if err != nil {
 		return err
 	}
 	_, err = d.conn.Exec(
-		"INSERT INTO schedules (block_id, days_mask, start_min, end_min) VALUES (?, ?, ?, ?)",
-		blockID, daysMask, startMin, endMin,
+		"INSERT INTO schedules (block_id, days_mask, start_min, end_min, allow) VALUES (?, ?, ?, ?, ?)",
+		blockID, w.Days, w.Start, w.End, w.Allow,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to add schedule to block '%s': %w", blockName, err)
@@ -213,7 +231,7 @@ func (d *DB) ListSchedules(blockName string) ([]Schedule, error) {
 		return nil, err
 	}
 	rows, err := d.conn.Query(
-		"SELECT id, days_mask, start_min, end_min FROM schedules WHERE block_id = ? ORDER BY id",
+		"SELECT id, days_mask, start_min, end_min, allow FROM schedules WHERE block_id = ? ORDER BY id",
 		blockID,
 	)
 	if err != nil {
@@ -224,7 +242,7 @@ func (d *DB) ListSchedules(blockName string) ([]Schedule, error) {
 	var out []Schedule
 	for rows.Next() {
 		s := Schedule{BlockName: blockName, Num: len(out) + 1}
-		if err := rows.Scan(&s.ID, &s.DaysMask, &s.StartMin, &s.EndMin); err != nil {
+		if err := rows.Scan(&s.ID, &s.DaysMask, &s.StartMin, &s.EndMin, &s.Allow); err != nil {
 			return nil, fmt.Errorf("failed to read schedule: %w", err)
 		}
 		out = append(out, s)
@@ -236,7 +254,7 @@ func (d *DB) ListSchedules(blockName string) ([]Schedule, error) {
 // decide which blocks to auto-activate or auto-deactivate.
 func (d *DB) AllSchedules() ([]Schedule, error) {
 	rows, err := d.conn.Query(`
-		SELECT s.id, b.name, s.days_mask, s.start_min, s.end_min
+		SELECT s.id, b.name, s.days_mask, s.start_min, s.end_min, s.allow
 		FROM schedules s
 		JOIN blocks b ON b.id = s.block_id
 		ORDER BY b.name, s.id
@@ -249,7 +267,7 @@ func (d *DB) AllSchedules() ([]Schedule, error) {
 	var out []Schedule
 	for rows.Next() {
 		var s Schedule
-		if err := rows.Scan(&s.ID, &s.BlockName, &s.DaysMask, &s.StartMin, &s.EndMin); err != nil {
+		if err := rows.Scan(&s.ID, &s.BlockName, &s.DaysMask, &s.StartMin, &s.EndMin, &s.Allow); err != nil {
 			return nil, fmt.Errorf("failed to read schedule: %w", err)
 		}
 		out = append(out, s)

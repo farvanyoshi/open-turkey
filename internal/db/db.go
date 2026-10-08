@@ -153,6 +153,7 @@ CREATE TABLE IF NOT EXISTS schedules (
     days_mask INTEGER NOT NULL,
     start_min INTEGER NOT NULL,
     end_min   INTEGER NOT NULL,
+    allow     BOOLEAN NOT NULL DEFAULT 0,
     FOREIGN KEY (block_id) REFERENCES blocks(id) ON DELETE CASCADE
 );
 
