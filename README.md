@@ -55,7 +55,7 @@ The installed program is independent of the source directory — once installed,
 - **Active**: a block currently in effect (the system is enforcing it).
 - **Character lock (`--lock`)**: prevents `stop`. The only way out is `unlock`, which shows a string of random characters and requires typing all of it in one go, with at least 98% accuracy (at most 6 errors in the default 300 characters). Mistakes aren't highlighted (Backspace works, but you have to spot them yourself), paste is rejected, and `--lock-chars` sets the length (default 300 characters, several minutes of typing) — deliberate friction to outlast an impulse. Each character is a letter (upper or lower case) 60% of the time, a digit 35% of the time and a symbol 5% of the time; symbols can be any printable ASCII symbol on a US keyboard (`` !"#$%&'()*+,-./:;<=>?@[\]^_`{|}~ ``).
 - **Time lock (`--for` / `--until`)**: the block cannot be removed *at all* — not even with the challenge — until the time passes. The strongest lock.
-- **Schedule**: recurring windows (e.g. weekdays 09:00–17:00). The daemon turns the block on when a window opens and off when it closes; while a window is open the block can't be stopped. With **allow windows** it's the other way round: the block is on at all times *except* during its allow windows (e.g. allow games only on Friday and Saturday evenings). Starting **30 minutes before** a window opens, the block is frozen: it can't be weakened or removed (only made stricter), and that schedule can't be removed, until the window closes.
+- **Schedule**: recurring windows (e.g. weekdays 09:00–17:00). The daemon turns the block on when a window opens and off when it closes; while a window is open the block can't be stopped. With **allow windows** it's the other way round: the block is on at all times *except* during its allow windows (e.g. allow games only on Friday and Saturday evenings), and it can never be loosened on the spot — loosening changes are queued for 24 hours, or applied with `--now` after the typing challenge. Starting **30 minutes before** a window opens, the block is frozen: it can't be weakened or removed (only made stricter), and that schedule can't be removed, until the window closes.
 
 While a block is *held* (char-locked, time-locked, in a schedule window, or within 30 minutes of one opening) it can't be removed or weakened, and `make uninstall` refuses. It can still be made **stricter**: see [Strengthening a held block](#strengthening-a-held-block). Everything is friction, not a security boundary — a determined root user can always recover (see the threat-model note above).
 
@@ -149,9 +149,26 @@ Schedules are numbered `1, 2, 3, …` per block. Removing one moves the later on
 
 Windows are same-day; for an overnight span (e.g. 17:00–05:00) add two windows (`17:00–24:00` and `00:00–05:00`). From **30 minutes before** a schedule's window opens until it closes, that schedule **can't be removed** — otherwise deleting it would end the block early or stop it from starting, defeating the point. Schedules whose windows aren't open or about to open can still be removed at any time, and you can always add new block windows.
 
-For allow windows the same rule applies in reverse: you can't add an allow window that would open now or within 30 minutes, nor remove a block's **last** allow window while the block is on (or due on within 30 minutes). Removing one of several allow windows is always allowed, since it only makes the block stricter.
+Whenever its schedule has the block on, or will within 30 minutes, the block itself is frozen: it can't be weakened (removing apps or patterns, changing its mode, …) or removed, though it can still be made stricter (see [Strengthening a held block](#strengthening-a-held-block)).
 
-Whenever its schedule has the block on, or will within 30 minutes, the block itself is frozen: it can't be weakened (removing apps or patterns, changing its mode, …) or removed, though it can still be made stricter (see [Strengthening a held block](#strengthening-a-held-block)). For an allow-window block that means it can only be loosened during an allow window (with more than 30 minutes of it left).
+#### Loosening a block with allow windows
+
+A block with allow windows is meant to stay blocked outside them, so it can't be loosened directly **at any time** — not even during an allow window, which would otherwise be the moment to dismantle it. Loosening changes are:
+
+- removing apps or patterns, `remove-site` on a blocklist block, `add-site` on an allowlist block (or `remove-site` that would empty it), and `set-mode`;
+- `block remove`;
+- adding another allow window, or removing the **last** one (removing one of several only makes the block stricter, so that's immediate).
+
+Such a change is **queued** and applied by the daemon **24 hours** later. Add `--now` to apply it immediately instead, after passing the same typing challenge as `unlock`:
+
+```bash
+open-turkey block remove-app games steam          # queued; takes effect in 24h
+open-turkey block remove-app games steam --now    # typing challenge, then immediate
+open-turkey pending                               # list queued changes
+open-turkey pending cancel 1                      # drop one
+```
+
+Queued changes also show in `block info` and `status`. If the block is also character- or time-locked (from `start --lock/--for/--until`), loosening is refused, and an already-queued change waits until those locks lift. Changes that make the block stricter (adding apps, sites to a blocklist, patterns, locks) always apply immediately.
 
 Show status:
 
@@ -238,7 +255,7 @@ journalctl -u open-turkey -f
 sudo make uninstall
 ```
 
-Uninstalling first runs a guard that **refuses while any block is held** (character-locked, time-locked, in an open schedule window, or within 30 minutes of one opening), so uninstalling can't be used to sidestep a lock — clear the hold first. When it proceeds, it deactivates all blocks and removes every blocking layer (`/etc/hosts` entries, firewall rules, browser policies) so the system is left clean rather than blocked-with-no-tool.
+Uninstalling first runs a guard that **refuses while any block is held** (character-locked, time-locked, in an open schedule window, or within 30 minutes of one opening) **or has allow windows**, so uninstalling can't be used to sidestep a lock — clear the hold first, and remove allow windows (queued or `--now`, see above). When it proceeds, it deactivates all blocks and removes every blocking layer (`/etc/hosts` entries, firewall rules, browser policies) so the system is left clean rather than blocked-with-no-tool.
 
 ## Intentionally not implemented
 

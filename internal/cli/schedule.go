@@ -78,16 +78,20 @@ var scheduleAddCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		for _, s := range schedules {
-			if s.Allow != allow {
-				return fmt.Errorf("block '%s' has %s windows; a block's schedules must be all block windows or all allow windows", name, kindName(s.Allow))
+		// An allow window opens a gap in the block. On a block that already
+		// has allow windows that is a loosening edit (queued, or --now with
+		// the typing challenge). Otherwise it can't be added if the gap would
+		// start now or within schedule.EditFreeze.
+		if allow && len(schedules) > 0 && schedules[0].Allow {
+			proceed, err := gateEdit(cmd, database, name, false, db.Edit{Action: db.EditAddSchedule, Window: w})
+			if err != nil || !proceed {
+				return err
 			}
-		}
-		// An allow window opens a gap in the block, so it can't be added if
-		// that gap would start now or within schedule.EditFreeze.
-		from := db.Windows(schedules)
-		if schedule.Weakens(from, append(from, w), time.Now(), schedule.EditFreeze) {
-			return fmt.Errorf("that allow window would lift '%s' now or within %s; add it at least %s before it opens", name, freezeLead(), freezeLead())
+		} else {
+			from := db.Windows(schedules)
+			if schedule.Weakens(from, append(from, w), time.Now(), schedule.EditFreeze) {
+				return fmt.Errorf("that allow window would lift '%s' now or within %s; add it at least %s before it opens", name, freezeLead(), freezeLead())
+			}
 		}
 
 		if err := database.AddSchedule(name, w); err != nil {
@@ -99,14 +103,6 @@ var scheduleAddCmd = &cobra.Command{
 		}
 		return nil
 	},
-}
-
-// kindName names a schedule kind for messages.
-func kindName(allow bool) string {
-	if allow {
-		return "allow"
-	}
-	return "block"
 }
 
 var scheduleListCmd = &cobra.Command{
@@ -168,10 +164,17 @@ var scheduleRemoveCmd = &cobra.Command{
 		}
 		from := db.Windows(schedules)
 		to := append(append([]schedule.Window{}, from[:num-1]...), from[num:]...)
-		if schedule.Weakens(from, to, time.Now(), schedule.EditFreeze) {
-			if from[num-1].Allow {
-				return fmt.Errorf("schedule %d is the last allow window of '%s', which is on now or within %s; it can't be removed until an allow window is open with more than %s left", num, name, freezeLead(), freezeLead())
+		switch {
+		case from[num-1].Allow && len(schedules) == 1:
+			// Removing the last allow window leaves the block unscheduled:
+			// a loosening edit (queued, or --now with the typing challenge).
+			proceed, err := gateEdit(cmd, database, name, false, db.Edit{Action: db.EditRemoveSchedule, Window: from[num-1]})
+			if err != nil || !proceed {
+				return err
 			}
+		case from[num-1].Allow:
+			// Removing one of several allow windows only makes it stricter.
+		case schedule.Weakens(from, to, time.Now(), schedule.EditFreeze):
 			return fmt.Errorf("schedule %d for '%s' is in its window or starts within %s, and can't be removed until the window closes", num, name, freezeLead())
 		}
 
@@ -188,6 +191,8 @@ func init() {
 	scheduleAddCmd.Flags().String("from", "", "Start time HH:MM (required)")
 	scheduleAddCmd.Flags().String("to", "", "End time HH:MM, or 24:00 for midnight (required)")
 	scheduleAddCmd.Flags().Bool("allow", false, "Allow window: keep the block on at all times except during its allow windows")
+
+	addNowFlag(scheduleAddCmd, scheduleRemoveCmd)
 
 	scheduleCmd.AddCommand(scheduleAddCmd)
 	scheduleCmd.AddCommand(scheduleListCmd)

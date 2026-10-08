@@ -57,14 +57,9 @@ func TestFeaturesRoundTrip(t *testing.T) {
 	if s, _ := d.ListSchedules("focus"); len(s) != 1 || s[0].Allow {
 		t.Errorf("ListSchedules = %+v; want 1 block window", s)
 	}
-	if err := d.AddSchedule("focus", schedule.Window{Days: 0x60, Start: 1080, End: 1440, Allow: true}); err != nil {
-		t.Fatal(err)
-	}
-	if s, _ := d.ListSchedules("focus"); len(s) != 2 || !s[1].Allow || s[1].EndMin != 1440 {
-		t.Errorf("allow window not stored: %+v", s)
-	}
-	if err := d.RemoveSchedule("focus", 2); err != nil {
-		t.Fatal(err)
+	// Mixing block and allow windows is refused.
+	if err := d.AddSchedule("focus", schedule.Window{Days: 0x60, Start: 1080, End: 1440, Allow: true}); err == nil {
+		t.Error("adding an allow window to a block with block windows should fail")
 	}
 	all, _ := d.AllSchedules()
 	if len(all) != 1 || all[0].BlockName != "focus" {
@@ -89,6 +84,17 @@ func TestFeaturesRoundTrip(t *testing.T) {
 	}
 	if s, _ := d.ListSchedules("focus"); len(s) != 0 {
 		t.Errorf("after remove, schedules = %d; want 0", len(s))
+	}
+
+	// With no schedules left, allow windows can be added.
+	if err := d.AddSchedule("focus", schedule.Window{Days: 0x60, Start: 1080, End: 1440, Allow: true}); err != nil {
+		t.Fatal(err)
+	}
+	if s, _ := d.ListSchedules("focus"); len(s) != 1 || !s[0].Allow || s[0].EndMin != 1440 {
+		t.Errorf("allow window not stored: %+v", s)
+	}
+	if has, _ := d.HasAllowWindows("focus"); !has {
+		t.Error("HasAllowWindows = false; want true")
 	}
 }
 
@@ -172,5 +178,71 @@ func TestScheduleNumbering(t *testing.T) {
 	}
 	if nums, _ := starts("b"); len(nums) != 3 {
 		t.Errorf("block b affected by edits to a: %v", nums)
+	}
+}
+
+// TestPendingEdits checks queueing, listing (soonest first), applying and
+// cancelling edits, and that they're deleted with their block.
+func TestPendingEdits(t *testing.T) {
+	d, err := OpenDB(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	if err := d.CreateBlock("games", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.AddApps("games", []string{"steam", "lutris"}); err != nil {
+		t.Fatal(err)
+	}
+	w := schedule.Window{Days: schedule.Friday, Start: 1080, End: 1440, Allow: true}
+	if err := d.AddSchedule("games", w); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := d.QueueEdit("games", Edit{Action: EditRemoveApps, Values: []string{"steam"}}, 200); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.QueueEdit("games", Edit{Action: EditRemoveSchedule, Window: w}, 100); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := d.ListPendingEdits()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 2 || pending[0].Edit.Action != EditRemoveSchedule || pending[0].Num != 1 || pending[0].Edit.Window != w {
+		t.Fatalf("pending = %+v; want the schedule removal first", pending)
+	}
+	if pending[1].Edit.String() != "remove-app steam" {
+		t.Errorf("String() = %q", pending[1].Edit.String())
+	}
+
+	// Apply both.
+	for _, p := range pending {
+		if err := d.ApplyEdit(p.BlockName, p.Edit); err != nil {
+			t.Fatalf("ApplyEdit(%s): %v", p.Edit, err)
+		}
+	}
+	b, _ := d.GetBlock("games")
+	if !reflect.DeepEqual(b.Apps, []string{"lutris"}) {
+		t.Errorf("apps = %v; want [lutris]", b.Apps)
+	}
+	if has, _ := d.HasAllowWindows("games"); has {
+		t.Error("allow window should have been removed")
+	}
+
+	// Removing the block (even while active) works, and drops its queue.
+	if err := d.QueueEdit("games", Edit{Action: EditRemoveApps, Values: []string{"lutris"}}, 300); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.ActivateBlock("games", false, 0, 0, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.ApplyEdit("games", Edit{Action: EditRemoveBlock}); err != nil {
+		t.Fatal(err)
+	}
+	if pending, _ := d.ListPendingEdits(); len(pending) != 0 {
+		t.Errorf("pending after block removal = %+v; want none", pending)
 	}
 }

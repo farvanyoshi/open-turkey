@@ -352,6 +352,9 @@ var statusCmd = &cobra.Command{
 		printLinesOrNone(inactive)
 		fmt.Println()
 		fmt.Printf("Total: %d blocks (%d active, %d inactive)\n", len(active)+len(inactive), len(active), len(inactive))
+		if pending, err := database.ListPendingEdits(); err == nil && len(pending) > 0 {
+			fmt.Printf("Pending changes: %d (see 'open-turkey pending')\n", len(pending))
+		}
 		return nil
 	},
 }

@@ -208,11 +208,26 @@ func Windows(schedules []Schedule) []schedule.Window {
 	return out
 }
 
-// AddSchedule attaches a recurring window to a block.
+// AddSchedule attaches a recurring window to a block. A block's schedules
+// must be all block windows or all allow windows, so adding the other kind is
+// refused.
 func (d *DB) AddSchedule(blockName string, w schedule.Window) error {
 	blockID, err := d.getBlockID(blockName)
 	if err != nil {
 		return err
+	}
+	existing, err := d.ListSchedules(blockName)
+	if err != nil {
+		return err
+	}
+	for _, s := range existing {
+		if s.Allow != w.Allow {
+			kind := "block"
+			if s.Allow {
+				kind = "allow"
+			}
+			return fmt.Errorf("block '%s' has %s windows; a block's schedules must be all block windows or all allow windows", blockName, kind)
+		}
 	}
 	_, err = d.conn.Exec(
 		"INSERT INTO schedules (block_id, days_mask, start_min, end_min, allow) VALUES (?, ?, ?, ?, ?)",
@@ -273,6 +288,30 @@ func (d *DB) AllSchedules() ([]Schedule, error) {
 		out = append(out, s)
 	}
 	return out, rows.Err()
+}
+
+// HasAllowWindows reports whether a block's schedules are allow windows.
+// Such a block can't be loosened by a plain edit (see the cli package).
+func (d *DB) HasAllowWindows(blockName string) (bool, error) {
+	schedules, err := d.ListSchedules(blockName)
+	if err != nil {
+		return false, err
+	}
+	return len(schedules) > 0 && schedules[0].Allow, nil
+}
+
+// removeScheduleWindow deletes the first of a block's schedules equal to w.
+func (d *DB) removeScheduleWindow(blockName string, w schedule.Window) error {
+	schedules, err := d.ListSchedules(blockName)
+	if err != nil {
+		return err
+	}
+	for _, s := range schedules {
+		if s.Window() == w {
+			return d.RemoveSchedule(blockName, s.Num)
+		}
+	}
+	return fmt.Errorf("block '%s' has no schedule %s", blockName, w)
 }
 
 // GetSchedule returns a block's schedule by its number (Num, as shown in

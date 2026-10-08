@@ -157,6 +157,15 @@ CREATE TABLE IF NOT EXISTS schedules (
     FOREIGN KEY (block_id) REFERENCES blocks(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS pending_edits (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    block_id INTEGER NOT NULL,
+    action   TEXT NOT NULL,
+    payload  TEXT NOT NULL,
+    apply_at INTEGER NOT NULL,
+    FOREIGN KEY (block_id) REFERENCES blocks(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS active_blocks (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     block_id     INTEGER UNIQUE NOT NULL,

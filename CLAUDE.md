@@ -33,7 +33,8 @@ check that everything compiles: `CGO_ENABLED=0 go build ./...`.
   validation (`validate.go`) guards against `/etc/hosts` injection.
 - **Enforce** (`internal/enforce/`): turns the active blocks into layer inputs
   (everything, allowlists included, unioned across active blocks); `Apply`
-  (CLI, on state change) and `Tick` (daemon, per cycle: schedule
+  (CLI, on state change) and `Tick` (daemon, per cycle: due queued edits +
+  schedule
   reconciliation + drift-only reapply). Single source of truth so CLI and
   daemon agree.
 - **Schedule** (`internal/schedule/`): pure time logic for recurring windows
@@ -42,12 +43,15 @@ check that everything compiles: `CGO_ENABLED=0 go build ./...`.
   refuses weakening edits/removals of that block or schedule.
 - **Holds** (`internal/cli/`): `blockHold` decides whether a block is held;
   `ensureEditable` refuses only edits that would weaken a held block, and
-  `start` on an active block can only strengthen its locks.
+  `start` on an active block can only strengthen its locks. A block with allow
+  windows is never loosened directly: `gateEdit` (`loosen.go`) queues the edit
+  for `LoosenDelay` (24h, applied by the daemon) or, with `--now`, runs the
+  typing challenge first.
 - **Daemon** (`internal/daemon/`): systemd service, calls `enforce.Tick` every 5s.
 - **DB** (`internal/db/`): SQLite at `/var/lib/open-turkey/open-turkey.db` (WAL);
   `OPEN_TURKEY_DB` overrides the path (tests only; the unit never sets it).
   `db.go` core + `features.go` (modes, patterns, schedules, time locks, schema
-  upgrades).
+  upgrades) + `pending.go` (queued loosening edits).
 - **Lock** (`internal/lock/`): raw-mode, paste-resistant typing challenge (random
   characters: 60% letters, 35% digits, 5% symbols) that gates a char-locked
   block's deactivation.
@@ -65,7 +69,8 @@ Full usage and examples in `README.md`. Summary:
 `block create [--allowlist] [--template T] | add-site | add-app | remove-site |
 remove-app | add-pattern | remove-pattern | set-mode | export | import | list |
 info | remove`, `start [--lock] [--lock-chars N] [--for D | --until HH:MM]`,
-`stop`, `unlock`, `status`, `schedule add [--allow]|list|remove`, and the hidden
+`stop`, `unlock`, `status`, `schedule add [--allow]|list|remove`,
+`pending [cancel N]` (loosening edits take `--now`), and the hidden
 `prepare-uninstall` (run by `make uninstall`).
 
 `./try-challenge.sh [length]` (source: `cmd/try-challenge/`) builds and runs the

@@ -7,9 +7,10 @@
 //
 //   - Apply forces every layer to match the active blocks right now. The CLI
 //     uses it after start/stop/edit, when the desired set has just changed.
-//   - Tick is the daemon's per-cycle routine: it first reconciles schedules
-//     (auto-activating/deactivating scheduled blocks), then re-applies only the
-//     layers that have drifted, so a steady state does no work.
+//   - Tick is the daemon's per-cycle routine: it applies queued edits whose
+//     delay has passed, reconciles schedules (auto-activating/deactivating
+//     scheduled blocks), then re-applies only the layers that have drifted, so
+//     a steady state does no work.
 package enforce
 
 import (
@@ -87,8 +88,12 @@ func ApplyFromDB(d *db.DB) error {
 	return Apply(active)
 }
 
-// Tick runs one daemon cycle: reconcile schedules, then re-apply drifted layers.
+// Tick runs one daemon cycle: apply due queued edits, reconcile schedules,
+// then re-apply drifted layers.
 func Tick(d *db.DB, now time.Time) error {
+	if err := applyDueEdits(d, now); err != nil {
+		log.Printf("daemon: pending edits error: %v", err)
+	}
 	if err := reconcileSchedules(d, now); err != nil {
 		log.Printf("daemon: schedule reconciliation error: %v", err)
 	}
@@ -152,26 +157,67 @@ func Tick(d *db.DB, now time.Time) error {
 	return nil
 }
 
+// applyDueEdits applies the queued edits (see db/pending.go) whose time has
+// come. An edit to a block that is char-locked or time-locked stays queued
+// until the lock lifts, so the queue can't get past a manual lock. An edit
+// that fails (e.g. the app was already removed) is logged and dropped.
+func applyDueEdits(d *db.DB, now time.Time) error {
+	pending, err := d.ListPendingEdits()
+	if err != nil {
+		return err
+	}
+	for _, p := range pending {
+		if p.ApplyAt > now.Unix() {
+			break // soonest first
+		}
+		detail, err := d.GetBlock(p.BlockName)
+		if err != nil {
+			log.Printf("daemon: pending edit: %v", err)
+			continue
+		}
+		if detail.Active && (detail.Locked || detail.LockedUntil > now.Unix()) {
+			continue
+		}
+		if err := d.ApplyEdit(p.BlockName, p.Edit); err != nil {
+			log.Printf("daemon: pending edit to %s (%s) failed, dropping it: %v", p.BlockName, p.Edit, err)
+		} else {
+			log.Printf("daemon: applied queued edit to %s: %s", p.BlockName, p.Edit)
+		}
+		if err := d.DeletePendingEdit(p.ID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // reconcileSchedules activates blocks their schedule enforces right now (see
 // schedule.Enforced: a block window is open, or no allow window is) and
 // deactivates the scheduled ones it no longer enforces. Manually-activated
 // blocks are never auto-deactivated, nor are scheduled ones that were locked
 // while active ("start --lock/--for/--until" on them): a time-locked block is
 // deactivated on the first tick after its time lock expires, and a
-// char-locked one stays on until it is unlocked.
+// char-locked one stays on until it is unlocked. A scheduled block whose
+// schedules have all been removed is deactivated like one whose window closed.
 func reconcileSchedules(d *db.DB, now time.Time) error {
 	all, err := d.AllSchedules()
 	if err != nil {
 		return err
 	}
-	if len(all) == 0 {
-		return nil
+	active, err := d.GetActiveBlocks()
+	if err != nil {
+		return err
 	}
 
-	// Group windows by block.
+	// Group windows by block; scheduled blocks with no schedules left get an
+	// empty list, which schedule.Enforced treats as "off".
 	windows := map[string][]schedule.Window{}
 	for _, s := range all {
 		windows[s.BlockName] = append(windows[s.BlockName], s.Window())
+	}
+	for _, b := range active {
+		if _, ok := windows[b.BlockName]; !ok && b.Scheduled {
+			windows[b.BlockName] = nil
+		}
 	}
 
 	for name, ws := range windows {

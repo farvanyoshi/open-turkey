@@ -67,11 +67,7 @@ var blockAddPatternCmd = &cobra.Command{
 		defer database.Close()
 
 		// Patterns are blocked in both modes, so adding one only strengthens
-		// the block.
-		if err := ensureEditable(database, name, true); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
+		// the block: no ensureEditable/gateEdit check needed.
 		if err := database.AddPatterns(name, patterns); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
@@ -99,9 +95,22 @@ var blockRemovePatternCmd = &cobra.Command{
 		}
 		defer database.Close()
 
-		if err := ensureEditable(database, name, false); err != nil {
+		detail, err := database.GetBlock(name)
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
+		}
+		if err := requireAll("pattern", name, detail.Patterns, patterns); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		proceed, err := gateEdit(cmd, database, name, false, db.Edit{Action: db.EditRemovePatterns, Values: patterns})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		if !proceed {
+			return
 		}
 		if err := database.RemovePatterns(name, patterns); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -129,9 +138,17 @@ var blockSetModeCmd = &cobra.Command{
 		}
 		defer database.Close()
 
-		if err := ensureEditable(database, name, false); err != nil {
+		if mode != db.ModeBlocklist && mode != db.ModeAllowlist {
+			fmt.Fprintf(os.Stderr, "Error: invalid block mode '%s' (use '%s' or '%s')\n", mode, db.ModeBlocklist, db.ModeAllowlist)
+			os.Exit(1)
+		}
+		proceed, err := gateEdit(cmd, database, name, false, db.Edit{Action: db.EditSetMode, Values: []string{mode}})
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
+		}
+		if !proceed {
+			return
 		}
 		if err := database.SetBlockMode(name, mode); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -242,6 +259,8 @@ var blockImportCmd = &cobra.Command{
 }
 
 func init() {
+	addNowFlag(blockRemovePatternCmd, blockSetModeCmd)
+
 	blockCmd.AddCommand(blockAddPatternCmd)
 	blockCmd.AddCommand(blockRemovePatternCmd)
 	blockCmd.AddCommand(blockSetModeCmd)

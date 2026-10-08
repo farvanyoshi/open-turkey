@@ -115,6 +115,94 @@ func TestReconcileKeepsLockedScheduledBlock(t *testing.T) {
 	}
 }
 
+// TestApplyDueEdits checks that the daemon applies queued edits once due, but
+// not while the block is char- or time-locked.
+func TestApplyDueEdits(t *testing.T) {
+	d, err := db.OpenDB(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	if err := d.CreateBlock("games", db.ModeBlocklist); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.AddApps("games", []string{"steam", "lutris"}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.Local)
+	if err := d.QueueEdit("games", db.Edit{Action: db.EditRemoveApps, Values: []string{"steam"}}, now.Add(time.Hour).Unix()); err != nil {
+		t.Fatal(err)
+	}
+	apps := func() []string { b, _ := d.GetBlock("games"); return b.Apps }
+
+	// Not due yet.
+	if err := applyDueEdits(d, now); err != nil {
+		t.Fatal(err)
+	}
+	if len(apps()) != 2 {
+		t.Fatal("edit applied before it was due")
+	}
+
+	// Due, but the block is time-locked: stays queued.
+	if err := d.ActivateBlock("games", false, 0, now.Add(3*time.Hour).Unix(), false); err != nil {
+		t.Fatal(err)
+	}
+	if err := applyDueEdits(d, now.Add(2*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if len(apps()) != 2 {
+		t.Fatal("edit applied while the block was time-locked")
+	}
+
+	// Lock expired: applied and removed from the queue.
+	if err := applyDueEdits(d, now.Add(4*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(apps(), []string{"lutris"}) {
+		t.Fatalf("apps = %v; want [lutris]", apps())
+	}
+	if pending, _ := d.ListPendingEdits(); len(pending) != 0 {
+		t.Errorf("pending = %+v; want none", pending)
+	}
+}
+
+// TestReconcileDropsUnscheduledBlock checks that a block its schedule switched
+// on is switched off once its schedules are all removed.
+func TestReconcileDropsUnscheduledBlock(t *testing.T) {
+	d, err := db.OpenDB(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	if err := d.CreateBlock("games", db.ModeBlocklist); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.AddApps("games", []string{"steam"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.AddSchedule("games", schedule.Window{Days: schedule.Friday, Start: 18 * 60, End: 24 * 60, Allow: true}); err != nil {
+		t.Fatal(err)
+	}
+	monday := time.Date(2024, 1, 1, 12, 0, 0, 0, time.Local)
+	if err := reconcileSchedules(d, monday); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := d.GetBlock("games"); !b.Active {
+		t.Fatal("expected the allow-window block to be on on Monday")
+	}
+	if err := d.RemoveSchedule("games", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := reconcileSchedules(d, monday); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := d.GetBlock("games"); b.Active {
+		t.Fatal("a scheduled block with no schedules left should be switched off")
+	}
+}
+
 // TestReconcileAllowSchedule checks allow windows: the block is on outside
 // them and off inside them.
 func TestReconcileAllowSchedule(t *testing.T) {

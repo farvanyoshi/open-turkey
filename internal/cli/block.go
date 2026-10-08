@@ -21,7 +21,9 @@
 //   - open-turkey block remove [name]
 //
 // A held block (locked, time-locked or held by its schedule) only accepts
-// edits that make it stricter; see ensureEditable.
+// edits that make it stricter; see ensureEditable. A block with allow windows
+// never takes a loosening edit directly: it is queued, or applied with --now
+// after the typing challenge; see gateEdit in loosen.go.
 package cli
 
 import (
@@ -277,9 +279,14 @@ var blockAddSiteCmd = &cobra.Command{
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
-		if err := ensureEditable(database, name, siteEditStrengthens(detail, domains, true)); err != nil {
+		proceed, err := gateEdit(cmd, database, name, siteEditStrengthens(detail, domains, true),
+			db.Edit{Action: db.EditAddSites, Values: domains})
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
+		}
+		if !proceed {
+			return
 		}
 
 		if err := database.AddSites(name, domains); err != nil {
@@ -335,9 +342,18 @@ var blockRemoveSiteCmd = &cobra.Command{
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
-		if err := ensureEditable(database, name, siteEditStrengthens(detail, domains, false)); err != nil {
+		if err := requireAll("site", name, detail.Sites, domains); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
+		}
+		proceed, err := gateEdit(cmd, database, name, siteEditStrengthens(detail, domains, false),
+			db.Edit{Action: db.EditRemoveSites, Values: domains})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		if !proceed {
+			return
 		}
 
 		if err := database.RemoveSites(name, domains); err != nil {
@@ -403,11 +419,7 @@ var blockAddAppCmd = &cobra.Command{
 		defer database.Close()
 
 		// Blocked apps are killed in both modes, so adding one only
-		// strengthens the block.
-		if err := ensureEditable(database, name, true); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
+		// strengthens the block: no ensureEditable/gateEdit check needed.
 
 		if err := database.AddApps(name, processNames); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -452,9 +464,22 @@ var blockRemoveAppCmd = &cobra.Command{
 		}
 		defer database.Close()
 
-		if err := ensureEditable(database, name, false); err != nil {
+		detail, err := database.GetBlock(name)
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
+		}
+		if err := requireAll("app", name, detail.Apps, processNames); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		proceed, err := gateEdit(cmd, database, name, false, db.Edit{Action: db.EditRemoveApps, Values: processNames})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		if !proceed {
+			return
 		}
 
 		if err := database.RemoveApps(name, processNames); err != nil {
@@ -632,6 +657,22 @@ var blockInfoCmd = &cobra.Command{
 				fmt.Printf("  [%d] %s\n", s.Num, s.Window())
 			}
 		}
+
+		// Show queued changes, if any.
+		if pending, err := database.ListPendingEdits(); err == nil {
+			first := true
+			for _, p := range pending {
+				if p.BlockName != name {
+					continue
+				}
+				if first {
+					fmt.Println()
+					fmt.Println("Pending changes (see 'open-turkey pending'):")
+					first = false
+				}
+				fmt.Printf("  [%d] %s (at %s)\n", p.Num, p.Edit, time.Unix(p.ApplyAt, 0).Format("2006-01-02 15:04"))
+			}
+		}
 	},
 }
 
@@ -660,13 +701,37 @@ var blockRemoveCmd = &cobra.Command{
 		}
 		defer database.Close()
 
-		if err := ensureEditable(database, name, false); err != nil {
+		detail, err := database.GetBlock(name)
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
+		}
+		proceed, err := gateEdit(cmd, database, name, false, db.Edit{Action: db.EditRemoveBlock})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		if !proceed {
+			return
+		}
+		// A block switched on by its allow-window schedule can get here (after
+		// the typing challenge) while active; switch it off first. Any other
+		// active block must still be stopped by hand first.
+		if detail.Active && detail.Scheduled {
+			if err := database.DeactivateBlock(name); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
 		}
 		if err := database.RemoveBlock(name); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
+		}
+		if detail.Active {
+			if err := enforce.ApplyFromDB(database); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
 		}
 
 		fmt.Printf("Block '%s' removed successfully.\n", name)
@@ -702,6 +767,8 @@ func init() {
 	blockCreateCmd.Flags().String("template", "", "Seed the block from a built-in list (social-media, news, video, shopping)")
 
 	// Add every subcommand as a child of "block".
+	addNowFlag(blockAddSiteCmd, blockRemoveSiteCmd, blockRemoveAppCmd, blockRemoveCmd)
+
 	blockCmd.AddCommand(blockCreateCmd)
 	blockCmd.AddCommand(blockAddSiteCmd)
 	blockCmd.AddCommand(blockRemoveSiteCmd)
