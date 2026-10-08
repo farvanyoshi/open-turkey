@@ -34,9 +34,8 @@ check that everything compiles: `CGO_ENABLED=0 go build ./...`.
 - **Enforce** (`internal/enforce/`): turns the active blocks into layer inputs
   (everything, allowlists included, unioned across active blocks); `Apply`
   (CLI, on state change) and `Tick` (daemon, per cycle: due queued edits +
-  schedule
-  reconciliation + drift-only reapply). Single source of truth so CLI and
-  daemon agree.
+  schedule reconciliation + drift-only reapply). Single source of truth so CLI
+  and daemon agree.
 - **Schedule** (`internal/schedule/`): pure time logic for recurring windows
   (block windows, or `--allow` windows that keep a block on except while open);
   `EditFreeze` (30 min) is the lead time before a window during which the CLI
