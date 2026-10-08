@@ -32,10 +32,10 @@ check that everything compiles: `CGO_ENABLED=0 go build ./...`.
   descendant of a matched process is killed too, except under shells/session processes. Domain
   validation (`validate.go`) guards against `/etc/hosts` injection.
 - **Enforce** (`internal/enforce/`): turns the active blocks into layer inputs
-  (blocklists/apps/patterns unioned, allowlists intersected, so stacking blocks
-  never weakens one); `Apply` (CLI, on state change) and `Tick` (daemon, per
-  cycle: schedule reconciliation + drift-only reapply). Single source of truth
-  so CLI and daemon agree.
+  (everything, allowlists included, unioned across active blocks); `Apply`
+  (CLI, on state change) and `Tick` (daemon, per cycle: schedule
+  reconciliation + drift-only reapply). Single source of truth so CLI and
+  daemon agree.
 - **Schedule** (`internal/schedule/`): pure time logic for recurring windows
   (block windows, or `--allow` windows that keep a block on except while open);
   `EditFreeze` (30 min) is the lead time before a window during which the CLI

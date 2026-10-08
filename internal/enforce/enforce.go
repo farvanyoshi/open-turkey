@@ -15,7 +15,6 @@ package enforce
 import (
 	"log"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/brunodcdo/open-turkey/internal/blocker"
@@ -31,20 +30,18 @@ import (
 //   - bp: the full browser policy (blocklist domains, patterns, and allowlist
 //     mode/domains if any active block is an allowlist).
 //
-// Stacking blocks never weakens any of them: blocklist domains, apps and
-// patterns are unioned, while allowlists are intersected (a site is allowed
-// only if every active allowlist block allows it; see intersectAllowlists).
-// Unioning allowlists would let a second allowlist block widen what a held one
-// allows.
+// Everything is unioned across active blocks, including allowlists: with two
+// allowlist blocks active, a site allowed by either one is reachable.
 func Inputs(active []db.ActiveBlockDetail) (hostsDomains, apps []string, bp blocker.BrowserPolicy) {
-	var blockDomains, patterns, appList []string
-	var allowLists [][]string
+	var blockDomains, allowDomains, patterns, appList []string
+	allowMode := false
 
 	for _, b := range active {
 		appList = append(appList, b.Apps...)
 		patterns = append(patterns, b.Patterns...)
 		if b.Mode == db.ModeAllowlist {
-			allowLists = append(allowLists, b.Sites)
+			allowMode = true
+			allowDomains = append(allowDomains, b.Sites...)
 		} else {
 			blockDomains = append(blockDomains, b.Sites...)
 		}
@@ -53,46 +50,10 @@ func Inputs(active []db.ActiveBlockDetail) (hostsDomains, apps []string, bp bloc
 	bp = blocker.BrowserPolicy{
 		BlockDomains:  blockDomains,
 		BlockPatterns: patterns,
-		AllowMode:     len(allowLists) > 0,
-		AllowDomains:  intersectAllowlists(allowLists),
+		AllowMode:     allowMode,
+		AllowDomains:  allowDomains,
 	}
 	return blocker.ValidDomains(blockDomains), dedup(appList), bp
-}
-
-// intersectAllowlists returns the domains allowed by every one of the lists.
-// An allowlist entry also allows its subdomains (that's how the browser
-// policies match it), so a domain from one list survives when every other list
-// has it or one of its parents: {google.com} and {docs.google.com} give
-// {docs.google.com}. Lists with nothing in common give an empty result, i.e.
-// nothing is allowed.
-func intersectAllowlists(lists [][]string) []string {
-	var out []string
-	for i, list := range lists {
-		for _, d := range list {
-			kept := true
-			for j, other := range lists {
-				if j != i && !allowsDomain(other, d) {
-					kept = false
-					break
-				}
-			}
-			if kept {
-				out = append(out, d)
-			}
-		}
-	}
-	return dedup(out)
-}
-
-// allowsDomain reports whether an allowlist permits domain d: d is on it, or
-// one of d's parent domains is.
-func allowsDomain(list []string, d string) bool {
-	for _, a := range list {
-		if d == a || strings.HasSuffix(d, "."+a) {
-			return true
-		}
-	}
-	return false
 }
 
 // Apply forces every layer to match the active blocks. Used by the CLI right

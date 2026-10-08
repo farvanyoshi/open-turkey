@@ -204,31 +204,3 @@ func TestInputsAllowlist(t *testing.T) {
 		t.Errorf("AllowDomains = %v; want 2 entries", bp.AllowDomains)
 	}
 }
-
-// TestInputsAllowlistsIntersect checks that stacked allowlist blocks narrow
-// what is allowed instead of widening it.
-func TestInputsAllowlistsIntersect(t *testing.T) {
-	cases := []struct {
-		a, b, want []string
-	}{
-		{[]string{"work.com"}, []string{"work.com", "youtube.com"}, []string{"work.com"}},
-		{[]string{"google.com"}, []string{"docs.google.com"}, []string{"docs.google.com"}},
-		{[]string{"google.com", "work.com"}, []string{"google.com", "docs.google.com"}, []string{"docs.google.com", "google.com"}},
-		{[]string{"work.com"}, []string{"youtube.com"}, []string{}},
-		{[]string{"evil.com"}, []string{"notevil.com"}, []string{}}, // suffix without a dot isn't a parent
-	}
-	for _, c := range cases {
-		active := []db.ActiveBlockDetail{
-			{BlockName: "a", Mode: db.ModeAllowlist, Sites: c.a},
-			{BlockName: "b", Mode: db.ModeAllowlist, Sites: c.b},
-			{BlockName: "c", Mode: db.ModeBlocklist, Sites: []string{"x.com"}},
-		}
-		_, _, bp := Inputs(active)
-		if !bp.AllowMode {
-			t.Fatal("AllowMode should be on")
-		}
-		if !reflect.DeepEqual(bp.AllowDomains, c.want) {
-			t.Errorf("%v ∩ %v = %v; want %v", c.a, c.b, bp.AllowDomains, c.want)
-		}
-	}
-}
