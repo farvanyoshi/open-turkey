@@ -104,8 +104,8 @@ func TestActiveWithin(t *testing.T) {
 		lead time.Duration
 		want bool
 	}{
-		{mon(8, 29, 0), EditFreeze, false}, // 31 minutes out
-		{mon(8, 30, 0), EditFreeze, true},  // exactly 30 minutes out
+		{mon(6, 59, 0), EditFreeze, false}, // 2h01 out
+		{mon(7, 0, 0), EditFreeze, true},   // exactly 2 hours out
 		{mon(8, 59, 59), EditFreeze, true},
 		{mon(12, 0, 0), EditFreeze, true}, // inside the window
 		{mon(16, 59, 0), 0, true},
@@ -121,7 +121,7 @@ func TestActiveWithin(t *testing.T) {
 	// A window starting at midnight is reached from the previous evening.
 	tue := Window{Days: Tuesday, Start: 0, End: 60}
 	if !tue.ActiveWithin(mon(23, 45, 0), EditFreeze) {
-		t.Error("Tuesday 00:00 window should be within 30 minutes of Monday 23:45")
+		t.Error("Tuesday 00:00 window should be within 2 hours of Monday 23:45")
 	}
 }
 
@@ -153,8 +153,8 @@ func TestWeakens(t *testing.T) {
 	if !Weakens([]Window{evening}, []Window{evening, morning}, fri(7, 45), EditFreeze) {
 		t.Error("adding an allow window opening in 15 minutes should weaken")
 	}
-	if Weakens([]Window{evening}, []Window{evening, morning}, fri(7, 0), EditFreeze) {
-		t.Error("adding an allow window opening in an hour shouldn't count")
+	if Weakens([]Window{evening}, []Window{evening, morning}, fri(5, 30), EditFreeze) {
+		t.Error("adding an allow window opening in 2.5 hours shouldn't count")
 	}
 	// The first allow window turns an unscheduled block on: never weaker.
 	if Weakens(nil, []Window{evening}, fri(12, 0), EditFreeze) {

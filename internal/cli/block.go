@@ -131,9 +131,9 @@ func isEmpty(sites, apps, patterns int) bool {
 	return sites == 0 && apps == 0 && patterns == 0
 }
 
-// freezeLead renders schedule.EditFreeze for messages ("30 minutes").
+// freezeLead renders schedule.EditFreeze for messages ("2 hours").
 func freezeLead() string {
-	return fmt.Sprintf("%d minutes", int(schedule.EditFreeze/time.Minute))
+	return fmt.Sprintf("%d hours", int(schedule.EditFreeze/time.Hour))
 }
 
 // normalizeDomains normalizes each raw domain and rejects any that aren't valid

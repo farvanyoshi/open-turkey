@@ -113,7 +113,7 @@ func Weakens(from, to []Window, t time.Time, lead time.Duration) bool {
 // CLI refuses edits that could weaken it (changing its lists or mode, removing
 // the schedule or the block) from this lead time until the window closes, so
 // a block can't be gutted moments before it is due to start.
-const EditFreeze = 30 * time.Minute
+const EditFreeze = 2 * time.Hour
 
 // ActiveWithin reports whether the window is open at any instant in
 // [t, t+lead]. Windows have minute granularity, so checking each minute in the

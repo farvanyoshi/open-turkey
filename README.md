@@ -55,9 +55,9 @@ The installed program is independent of the source directory — once installed,
 - **Active**: a block currently in effect (the system is enforcing it).
 - **Character lock (`--lock`)**: prevents `stop`. The only way out is `unlock`, which shows a string of random characters and requires typing all of it in one go, with at least 98% accuracy (at most 6 errors in the default 300 characters). Mistakes aren't highlighted (Backspace works, but you have to spot them yourself), paste is rejected, and `--lock-chars` sets the length (default 300 characters, several minutes of typing) — deliberate friction to outlast an impulse. Each character is a letter (upper or lower case) 60% of the time, a digit 35% of the time and a symbol 5% of the time; symbols can be any printable ASCII symbol on a US keyboard (`` !"#$%&'()*+,-./:;<=>?@[\]^_`{|}~ ``).
 - **Time lock (`--for` / `--until`)**: the block cannot be removed *at all* — not even with the challenge — until the time passes. The strongest lock.
-- **Schedule**: recurring windows (e.g. weekdays 09:00–17:00). The daemon turns the block on when a window opens and off when it closes; while a window is open the block can't be stopped. With **allow windows** it's the other way round: the block is on at all times *except* during its allow windows (e.g. allow games only on Friday and Saturday evenings), and it can never be loosened on the spot — loosening changes are queued for 24 hours, or applied with `--now` after the typing challenge. Starting **30 minutes before** a window opens, the block is frozen: it can't be weakened or removed (only made stricter), and that schedule can't be removed, until the window closes.
+- **Schedule**: recurring windows (e.g. weekdays 09:00–17:00). The daemon turns the block on when a window opens and off when it closes; while a window is open the block can't be stopped. With **allow windows** it's the other way round: the block is on at all times *except* during its allow windows (e.g. allow games only on Friday and Saturday evenings), and it can never be loosened on the spot — loosening changes are queued for 24 hours, or applied with `--now` after the typing challenge. Starting **2 hours before** a window opens, the block is frozen: it can't be weakened or removed (only made stricter), and that schedule can't be removed, until the window closes.
 
-While a block is *held* (char-locked, time-locked, in a schedule window, or within 30 minutes of one opening) it can't be removed or weakened, and `make uninstall` refuses. It can still be made **stricter**: see [Strengthening a held block](#strengthening-a-held-block). Everything is friction, not a security boundary — a determined root user can always recover (see the threat-model note above).
+While a block is *held* (char-locked, time-locked, in a schedule window, or within 2 hours of one opening) it can't be removed or weakened, and `make uninstall` refuses. It can still be made **stricter**: see [Strengthening a held block](#strengthening-a-held-block). Everything is friction, not a security boundary — a determined root user can always recover (see the threat-model note above).
 
 ## Commands
 
@@ -147,9 +147,9 @@ A block's schedules must be all block windows or all allow windows. `--to 24:00`
 
 Schedules are numbered `1, 2, 3, …` per block. Removing one moves the later ones down a number (remove `1` from `1, 2, 3` and the old `2`/`3` become `1`/`2`), and a new schedule takes the next number.
 
-Windows are same-day; for an overnight span (e.g. 17:00–05:00) add two windows (`17:00–24:00` and `00:00–05:00`). From **30 minutes before** a schedule's window opens until it closes, that schedule **can't be removed** — otherwise deleting it would end the block early or stop it from starting, defeating the point. Schedules whose windows aren't open or about to open can still be removed at any time, and you can always add new block windows.
+Windows are same-day; for an overnight span (e.g. 17:00–05:00) add two windows (`17:00–24:00` and `00:00–05:00`). From **2 hours before** a schedule's window opens until it closes, that schedule **can't be removed** — otherwise deleting it would end the block early or stop it from starting, defeating the point. Schedules whose windows aren't open or about to open can still be removed at any time, and you can always add new block windows.
 
-Whenever its schedule has the block on, or will within 30 minutes, the block itself is frozen: it can't be weakened (removing apps or patterns, changing its mode, …) or removed, though it can still be made stricter (see [Strengthening a held block](#strengthening-a-held-block)).
+Whenever its schedule has the block on, or will within 2 hours, the block itself is frozen: it can't be weakened (removing apps or patterns, changing its mode, …) or removed, though it can still be made stricter (see [Strengthening a held block](#strengthening-a-held-block)).
 
 #### Loosening a block with allow windows
 
@@ -206,7 +206,7 @@ open-turkey block remove-site social-media instagram.com
 Notes:
 
 - If the block is **active**, Open Turkey re-applies the layers so the change takes effect immediately.
-- If the block is **held** (character-locked, time-locked, in an open schedule window, or within 30 minutes of one opening), you **cannot** loosen it: removing apps or patterns, removing sites from a blocklist, adding sites to an allowlist, and changing its mode are refused. Clear the hold first (unlock, or wait for the time lock / schedule window to end), make your changes, then activate again. Edits that only make it stricter are always allowed (next section).
+- If the block is **held** (character-locked, time-locked, in an open schedule window, or within 2 hours of one opening), you **cannot** loosen it: removing apps or patterns, removing sites from a blocklist, adding sites to an allowlist, and changing its mode are refused. Clear the hold first (unlock, or wait for the time lock / schedule window to end), make your changes, then activate again. Edits that only make it stricter are always allowed (next section).
 
 #### Strengthening a held block
 
@@ -233,7 +233,7 @@ Remove an app (process) from a block:
 open-turkey block remove-app social-media discord
 ```
 
-Remove an entire block (must be inactive, and not within 30 minutes of a schedule window):
+Remove an entire block (must be inactive, and not within 2 hours of a schedule window):
 
 ```bash
 open-turkey block remove social-media
@@ -255,7 +255,7 @@ journalctl -u open-turkey -f
 sudo make uninstall
 ```
 
-Uninstalling first runs a guard that **refuses while any block is held** (character-locked, time-locked, in an open schedule window, or within 30 minutes of one opening) **or has allow windows**, so uninstalling can't be used to sidestep a lock — clear the hold first, and remove allow windows (queued or `--now`, see above). When it proceeds, it deactivates all blocks and removes every blocking layer (`/etc/hosts` entries, firewall rules, browser policies) so the system is left clean rather than blocked-with-no-tool.
+Uninstalling first runs a guard that **refuses while any block is held** (character-locked, time-locked, in an open schedule window, or within 2 hours of one opening) **or has allow windows**, so uninstalling can't be used to sidestep a lock — clear the hold first, and remove allow windows (queued or `--now`, see above). When it proceeds, it deactivates all blocks and removes every blocking layer (`/etc/hosts` entries, firewall rules, browser policies) so the system is left clean rather than blocked-with-no-tool.
 
 ## Intentionally not implemented
 

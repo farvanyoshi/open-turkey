@@ -15,7 +15,7 @@
 //     passes — not even with the challenge. The strongest lock.
 //   - Schedule window: while a scheduled window is open, the block is held; the
 //     daemon turns it off when the window closes. For edits (not stop/unlock)
-//     the hold starts schedule.EditFreeze (30 minutes) before the window
+//     the hold starts schedule.EditFreeze (2 hours) before the window
 //     opens, so a block can't be emptied just before it is due to start.
 //
 // Locks can be strengthened while held ("start" on an active block adds or

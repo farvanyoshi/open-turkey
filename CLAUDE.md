@@ -38,7 +38,7 @@ check that everything compiles: `CGO_ENABLED=0 go build ./...`.
   and daemon agree.
 - **Schedule** (`internal/schedule/`): pure time logic for recurring windows
   (block windows, or `--allow` windows that keep a block on except while open);
-  `EditFreeze` (30 min) is the lead time before a window during which the CLI
+  `EditFreeze` (2 h) is the lead time before a window during which the CLI
   refuses weakening edits/removals of that block or schedule.
 - **Holds** (`internal/cli/`): `blockHold` decides whether a block is held;
   `ensureEditable` refuses only edits that would weaken a held block, and
