@@ -16,6 +16,7 @@ package enforce
 import (
 	"log"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/brunodcdo/open-turkey/internal/blocker"
@@ -112,13 +113,19 @@ func Tick(d *db.DB, now time.Time) error {
 				log.Printf("daemon: error applying /etc/hosts: %v", err)
 			}
 		}
-		if !blocker.IsFirewallApplied() {
-			log.Println("daemon: firewall drifted, reapplying")
+		// The firewall holds resolved IPs, so also reapply when the domain set
+		// changed (otherwise a stopped block's rules would linger).
+		key := strings.Join(hosts, ",")
+		if !blocker.IsFirewallApplied() || key != firewallDomains {
+			log.Println("daemon: firewall drifted or domains changed, reapplying")
 			if err := blocker.ApplyFirewall(hosts); err != nil {
 				log.Printf("daemon: error applying firewall: %v", err)
+			} else {
+				firewallDomains = key
 			}
 		}
 	} else {
+		firewallDomains = ""
 		if blocker.HostsSectionPresent() {
 			if err := blocker.RemoveHosts(); err != nil {
 				log.Printf("daemon: error removing /etc/hosts section: %v", err)
@@ -270,6 +277,9 @@ func ScheduleFrozen(d *db.DB, blockName string, now time.Time) (bool, error) {
 	}
 	return schedule.EnforcedWithin(db.Windows(schedules), now, schedule.EditFreeze), nil
 }
+
+// firewallDomains is the domain set the daemon last applied to the firewall.
+var firewallDomains string
 
 func dedup(in []string) []string {
 	set := make(map[string]struct{}, len(in))

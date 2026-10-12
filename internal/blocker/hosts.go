@@ -207,6 +207,23 @@ func IsHostsApplied(domains []string) bool {
 	// Check the domains INSIDE our section only.
 	section := extractOpenTurkeySection(text)
 
+	// No extra entries either: a domain whose block was turned off must not
+	// linger in the section.
+	expected := map[string]bool{}
+	for _, domain := range valid {
+		expected["0.0.0.0 "+domain] = true
+		if strings.HasPrefix(domain, "www.") {
+			expected["0.0.0.0 "+strings.TrimPrefix(domain, "www.")] = true
+		} else {
+			expected["0.0.0.0 www."+domain] = true
+		}
+	}
+	for _, line := range strings.Split(section, "\n") {
+		if line = strings.TrimSpace(line); line != "" && !expected[line] {
+			return false
+		}
+	}
+
 	for _, domain := range valid {
 		// The exact "0.0.0.0 domain" line must be present. Using the full
 		// line avoids false positives (e.g. "facebook.com.br" matching
