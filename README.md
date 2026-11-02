@@ -1,3 +1,5 @@
+This repository was originally forked from [bdcdo/open-turkey](https://github.com/bdcdo/open-turkey). The README below comes directly from that repo. This repo adds some changes to that repo that I added while testing out AI coding tools that I found particularly useful.
+
 # Open Turkey
 
 A command-line productivity blocker for Linux, backed by a `systemd` service.
