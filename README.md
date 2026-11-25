@@ -130,6 +130,20 @@ open-turkey start social-media --for 2h            # can't be removed for 2 hour
 open-turkey start social-media --until 17:00       # can't be removed until 17:00
 ```
 
+Schedule a one-time block:
+
+```bash
+open-turkey start social-media --from 22:00 --until 06:00
+open-turkey start social-media --from "2027-01-15 09:00" --until "2027-01-15 17:00"
+```
+
+Times are local. With clock-only input, the start is the next occurrence of
+`--from` and the end is the next occurrence of `--until` after the start.
+The daemon enforces the window once and releases it at the end. Manual
+activations and recurring schedules can still keep the block active.
+The two-hour schedule edit freeze also applies to one-time windows.
+Use `status` or `block info <name>` to see upcoming and current windows.
+
 Recurring schedule (the daemon activates/deactivates it automatically):
 
 ```bash

@@ -53,6 +53,9 @@ func gateEdit(cmd *cobra.Command, database *db.DB, name string, strengthens bool
 	if err != nil {
 		return false, err
 	}
+	if hold.oneTimeFrozen {
+		return false, fmt.Errorf("block '%s' is in a one-time window or starts one within %s, and can't be loosened until the window closes", name, freezeLead())
+	}
 	if hold.active && hold.timeLocked() {
 		return false, fmt.Errorf("block '%s' is time-locked until %s and can't be loosened before then", name, hold.until())
 	}

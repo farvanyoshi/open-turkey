@@ -155,10 +155,7 @@ func normalizeDomains(raw []string) ([]string, error) {
 // Parent command: block
 // --------------------------------------------------------------------------
 
-// blockCmd is the parent command of every block subcommand.
-// It does nothing on its own — it only serves as a grouping.
-// When the user types "open-turkey block" without a subcommand,
-// Cobra shows the help automatically.
+// blockCmd groups block management commands.
 var blockCmd = &cobra.Command{
 	Use:   "block",
 	Short: "Manage blocks of sites and applications",
@@ -600,16 +597,24 @@ var blockInfoCmd = &cobra.Command{
 		fmt.Printf("Mode: %s\n", block.Mode)
 		fmt.Printf("Created at: %s\n", block.CreatedAt)
 
+		now := time.Now()
+		windows, err := database.OneTimeWindows(name, now)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		oneTimeActive := len(windows) > 0 && windows[0].Includes(now)
+
 		// Status line: inactive, or active with any holds.
-		if block.Active {
+		if block.Active || oneTimeActive {
 			status := "Active"
-			if block.Scheduled {
+			if block.Scheduled || oneTimeActive {
 				status += " (scheduled)"
 			}
 			if block.Locked {
 				status += fmt.Sprintf(" [Locked - %d characters]", block.LockChars)
 			}
-			if block.LockedUntil > time.Now().Unix() {
+			if block.LockedUntil > now.Unix() {
 				status += fmt.Sprintf(" [Time-locked until %s]", time.Unix(block.LockedUntil, 0).Format("2006-01-02 15:04"))
 			}
 			fmt.Printf("Status: %s\n", status)
@@ -655,6 +660,13 @@ var blockInfoCmd = &cobra.Command{
 			fmt.Println("Schedules:")
 			for _, s := range schedules {
 				fmt.Printf("  [%d] %s\n", s.Num, s.Window())
+			}
+		}
+		if len(windows) > 0 {
+			fmt.Println()
+			fmt.Println("One-time windows:")
+			for _, w := range windows {
+				fmt.Printf("  %s\n", windowRange(w))
 			}
 		}
 

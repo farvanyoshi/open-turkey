@@ -182,6 +182,13 @@ func applyDueEdits(d *db.DB, now time.Time) error {
 			log.Printf("daemon: pending edit: %v", err)
 			continue
 		}
+		windows, err := d.OneTimeWindows(p.BlockName, now)
+		if err != nil {
+			return err
+		}
+		if len(windows) > 0 && !windows[0].Start.After(now.Add(schedule.EditFreeze)) {
+			continue
+		}
 		if detail.Active && (detail.Locked || detail.LockedUntil > now.Unix()) {
 			continue
 		}
@@ -210,6 +217,10 @@ func reconcileSchedules(d *db.DB, now time.Time) error {
 	if err != nil {
 		return err
 	}
+	oneTime, err := d.OneTimeBlocks(now)
+	if err != nil {
+		return err
+	}
 	active, err := d.GetActiveBlocks()
 	if err != nil {
 		return err
@@ -221,6 +232,13 @@ func reconcileSchedules(d *db.DB, now time.Time) error {
 	for _, s := range all {
 		windows[s.BlockName] = append(windows[s.BlockName], s.Window())
 	}
+	oneTimeActive := make(map[string]bool, len(oneTime))
+	for _, name := range oneTime {
+		oneTimeActive[name] = true
+		if _, ok := windows[name]; !ok {
+			windows[name] = nil
+		}
+	}
 	for _, b := range active {
 		if _, ok := windows[b.BlockName]; !ok && b.Scheduled {
 			windows[b.BlockName] = nil
@@ -228,7 +246,7 @@ func reconcileSchedules(d *db.DB, now time.Time) error {
 	}
 
 	for name, ws := range windows {
-		within := schedule.Enforced(ws, now)
+		within := oneTimeActive[name] || schedule.Enforced(ws, now)
 
 		detail, err := d.GetBlock(name)
 		if err != nil {
@@ -253,7 +271,7 @@ func reconcileSchedules(d *db.DB, now time.Time) error {
 			}
 		}
 	}
-	return nil
+	return d.PruneOneTimeWindows(now)
 }
 
 // ScheduleActiveNow reports whether a block's schedule enforces it now (see

@@ -157,6 +157,13 @@ CREATE TABLE IF NOT EXISTS schedules (
     FOREIGN KEY (block_id) REFERENCES blocks(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS one_time_windows (
+    block_id  INTEGER NOT NULL REFERENCES blocks(id) ON DELETE CASCADE,
+    starts_at INTEGER NOT NULL,
+    ends_at   INTEGER NOT NULL CHECK (ends_at > starts_at),
+    PRIMARY KEY (block_id, starts_at, ends_at)
+);
+
 CREATE TABLE IF NOT EXISTS pending_edits (
     id       INTEGER PRIMARY KEY AUTOINCREMENT,
     block_id INTEGER NOT NULL,

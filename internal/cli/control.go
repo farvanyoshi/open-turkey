@@ -36,6 +36,7 @@ import (
 	"github.com/brunodcdo/open-turkey/internal/db"
 	"github.com/brunodcdo/open-turkey/internal/enforce"
 	"github.com/brunodcdo/open-turkey/internal/lock"
+	"github.com/brunodcdo/open-turkey/internal/schedule"
 	"github.com/spf13/cobra"
 )
 
@@ -52,7 +53,11 @@ Locks (optional, and combinable):
   --lock            Require the typing challenge ('unlock') to deactivate.
   --lock-chars N    Challenge length in characters (default 300, minimum 30).
   --for DURATION    Time lock: cannot be removed for this long (e.g. 2h, 90m, 1h30m).
-  --until HH:MM     Time lock until a clock time today (or tomorrow if already past).
+  --until TIME      Time lock until TIME.
+  --from TIME       With --until, schedule a one-time block that lifts automatically.
+
+TIME is a local HH:MM clock time or "YYYY-MM-DD HH:MM". A clock-only time
+uses its next occurrence. With --from, a clock-only --until is relative to the start.
 
 A time lock cannot be lifted early by anyone short of root — that is the point.
 
@@ -80,11 +85,18 @@ shortened or removed this way.`,
 		if err != nil {
 			return err
 		}
+		if cmd.Flags().Changed("from") {
+			if useLock || cmd.Flags().Changed("lock-chars") || cmd.Flags().Changed("for") {
+				return fmt.Errorf("--from uses --until and cannot be combined with --for, --lock or --lock-chars")
+			}
+			from, _ := cmd.Flags().GetString("from")
+			return scheduleOneTime(blockName, from, untilClock, time.Now())
+		}
 
 		if useLock && lockChars < lock.MinLockChars {
 			return fmt.Errorf("--lock-chars must be at least %d (got %d)", lock.MinLockChars, lockChars)
 		}
-		if forDur != "" && untilClock != "" {
+		if cmd.Flags().Changed("for") && cmd.Flags().Changed("until") {
 			return fmt.Errorf("use only one of --for or --until")
 		}
 
@@ -101,8 +113,8 @@ shortened or removed this way.`,
 				return fmt.Errorf("--for duration must be positive")
 			}
 			lockedUntil = now.Add(d).Unix()
-		case untilClock != "":
-			t, err := untilToday(now, untilClock)
+		case cmd.Flags().Changed("until"):
+			t, err := parseBlockTime(now, "until", untilClock)
 			if err != nil {
 				return err
 			}
@@ -327,7 +339,14 @@ var statusCmd = &cobra.Command{
 			if detail.Mode == db.ModeAllowlist {
 				tags += " [ALLOWLIST]"
 			}
-			if detail.Active {
+			windows, err := database.OneTimeWindows(detail.Name, now)
+			if err != nil {
+				return err
+			}
+			for _, w := range windows {
+				tags += fmt.Sprintf(" [ONE-TIME %s]", windowRange(w))
+			}
+			if detail.Active || len(windows) > 0 && windows[0].Includes(now) {
 				if detail.Scheduled {
 					tags += " [SCHEDULED]"
 				}
@@ -382,6 +401,7 @@ type holdState struct {
 	// scheduleFrozen: a schedule window is open now or opens within
 	// schedule.EditFreeze, whether or not the block is active yet.
 	scheduleFrozen bool
+	oneTimeFrozen  bool
 	now            time.Time
 }
 
@@ -409,44 +429,36 @@ func blockHold(database *db.DB, name string, now time.Time) (holdState, error) {
 		lockedUntil: detail.LockedUntil,
 		now:         now,
 	}
+	windows, err := database.OneTimeWindows(name, now)
+	if err != nil {
+		return holdState{}, err
+	}
+	if len(windows) > 0 {
+		h.oneTimeFrozen = !windows[0].Start.After(now.Add(schedule.EditFreeze))
+		h.scheduledNow = windows[0].Includes(now)
+		h.active = h.active || h.scheduledNow
+	}
 	if detail.Active {
 		sched, err := enforce.ScheduleActiveNow(database, name, now)
 		if err != nil {
 			return holdState{}, err
 		}
-		h.scheduledNow = sched
+		h.scheduledNow = h.scheduledNow || sched
 	}
 	frozen, err := enforce.ScheduleFrozen(database, name, now)
 	if err != nil {
 		return holdState{}, err
 	}
-	h.scheduleFrozen = frozen
+	h.scheduleFrozen = frozen || h.oneTimeFrozen
 	return h, nil
-}
-
-// untilToday parses "HH:MM" into the next time it occurs from now (today, or
-// tomorrow if the time has already passed today).
-func untilToday(now time.Time, clock string) (time.Time, error) {
-	var h, m int
-	if _, err := fmt.Sscanf(clock, "%d:%d", &h, &m); err != nil {
-		return time.Time{}, fmt.Errorf("invalid --until time %q (want HH:MM)", clock)
-	}
-	if h < 0 || h > 23 || m < 0 || m > 59 {
-		return time.Time{}, fmt.Errorf("invalid --until time %q", clock)
-	}
-	t := time.Date(now.Year(), now.Month(), now.Day(), h, m, 0, 0, now.Location())
-	if !t.After(now) {
-		t = t.Add(24 * time.Hour)
-	}
-	return t, nil
 }
 
 func init() {
 	startCmd.Flags().Bool("lock", false, "Lock the block (requires a challenge to deactivate)")
 	startCmd.Flags().Int("lock-chars", lock.DefaultLockChars, "Number of characters in the unlock challenge")
 	startCmd.Flags().String("for", "", "Time lock: keep the block un-removable for this duration (e.g. 2h, 90m)")
-	startCmd.Flags().String("until", "", "Time lock: keep the block un-removable until this clock time (HH:MM)")
-
+	startCmd.Flags().String("until", "", "End time (HH:MM or YYYY-MM-DD HH:MM)")
+	startCmd.Flags().String("from", "", "Schedule a one-time block starting at this time (requires --until)")
 	rootCmd.AddCommand(startCmd)
 	rootCmd.AddCommand(stopCmd)
 	rootCmd.AddCommand(unlockCmd)

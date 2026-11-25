@@ -63,6 +63,56 @@ func TestReconcileSchedules(t *testing.T) {
 	}
 }
 
+func TestReconcileOneTimeWindows(t *testing.T) {
+	d, err := db.OpenDB(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	start := time.Date(2027, 1, 1, 10, 0, 0, 0, time.Local)
+	end := start.Add(time.Hour)
+	for _, name := range []string{"once", "manual", "recurring"} {
+		if err := d.CreateBlock(name, db.ModeBlocklist); err != nil {
+			t.Fatal(err)
+		}
+		if err := d.AddOneTimeWindow(name, start, end); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := d.ActivateBlock("manual", false, 0, 0, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.AddSchedule("recurring", schedule.Window{Days: 0x7f, Start: 10*60 + 30, End: 12 * 60}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, step := range []struct {
+		at        time.Time
+		once      bool
+		recurring bool
+	}{
+		{start.Add(-time.Second), false, false},
+		{start, true, true},
+		{end.Add(-time.Second), true, true},
+		{end, false, true},
+		{start.AddDate(0, 0, 1), false, false},
+	} {
+		if err := reconcileSchedules(d, step.at); err != nil {
+			t.Fatal(err)
+		}
+		for name, want := range map[string]bool{"once": step.once, "manual": true, "recurring": step.recurring} {
+			block, err := d.GetBlock(name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if block.Active != want || block.Scheduled != (want && name != "manual") {
+				t.Errorf("%s at %s: active=%v scheduled=%v", name, step.at, block.Active, block.Scheduled)
+			}
+		}
+	}
+}
+
 // TestReconcileKeepsLockedScheduledBlock checks that a schedule-activated
 // block that was then locked isn't deactivated when its window closes: a time
 // lock holds it until it expires, a char lock until it is unlocked.
